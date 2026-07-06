@@ -1055,28 +1055,38 @@ private struct ChargingStatusView: View {
     @State private var isAnimating = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            ZStack {
-                Circle()
-                    .fill(Color.teslaGreen.opacity(0.16))
-                Image(systemName: "bolt.fill")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(Color.teslaGreen)
-                    .offset(y: isAnimating ? -2 : 2)
-                    .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: isAnimating)
-            }
-            .frame(width: 34, height: 34)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(Color.teslaGreen.opacity(0.16))
+                    Image(systemName: "bolt.fill")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(Color.teslaGreen)
+                        .offset(y: isAnimating ? -2 : 2)
+                        .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: isAnimating)
+                }
+                .frame(width: 34, height: 34)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("正在充电")
-                    .font(.subheadline.weight(.semibold))
-                Text("约 \(state.estimatedFullChargeTimeText) 充满")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("正在充电")
+                        .font(.subheadline.weight(.semibold))
+                    Text("约 \(state.estimatedFullChargeTimeText) 充满")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
             }
 
-            Spacer()
+            if !metrics.isEmpty {
+                HStack(spacing: 8) {
+                    ForEach(metrics) { metric in
+                        ChargingMetricChip(metric: metric)
+                    }
+                }
+            }
         }
         .padding(12)
         .background(Color.teslaControlBackground)
@@ -1101,6 +1111,58 @@ private struct ChargingStatusView: View {
         .onAppear {
             isAnimating = true
         }
+    }
+
+    private var metrics: [ChargingMetric] {
+        [
+            state.chargingPower.map {
+                ChargingMetric(title: "功率", value: formatNumber($0, unit: " W", maximumFractionDigits: 0), systemImage: "bolt.fill")
+            },
+            state.batteryVoltage.map {
+                ChargingMetric(title: "电压", value: formatNumber($0, unit: " V", maximumFractionDigits: 1), systemImage: "bolt.batteryblock.fill")
+            },
+            state.batteryTemperature.map {
+                ChargingMetric(title: "温度", value: formatNumber($0, unit: "°C", maximumFractionDigits: 1), systemImage: "thermometer.medium")
+            }
+        ].compactMap { $0 }
+    }
+}
+
+private struct ChargingMetric: Identifiable {
+    var title: String
+    var value: String
+    var systemImage: String
+
+    var id: String {
+        title
+    }
+}
+
+private struct ChargingMetricChip: View {
+    var metric: ChargingMetric
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: metric.systemImage)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(Color.teslaGreen)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(metric.value)
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(Color.teslaPrimaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+                Text(metric.title)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Color.teslaSecondaryText)
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(Color.teslaCardBackground.opacity(0.72))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
@@ -2632,6 +2694,8 @@ private struct VehicleDetailPanel: View {
                 DetailRow(title: "电量", value: snapshot.state.batteryText, systemImage: "battery.100")
                 DetailRow(title: "电池电压", value: snapshot.state.batteryVoltageText, systemImage: "bolt.batteryblock.fill")
                 DetailRow(title: "电池温度", value: snapshot.state.batteryTemperatureText, systemImage: "thermometer.medium")
+                DetailRow(title: "循环次数", value: snapshot.state.batteryCycleCountText, systemImage: "arrow.trianglehead.2.clockwise")
+                DetailRow(title: "充电功率", value: snapshot.state.chargingPowerText, systemImage: "bolt.meter")
                 DetailRow(title: "预估续航", value: snapshot.state.enduranceText, systemImage: "road.lanes")
                 DetailRow(title: "AI 预估", value: snapshot.state.aiEstimatedMileageText, systemImage: "sparkles")
                 DetailRow(title: "本地预估", value: snapshot.state.localEstimatedMileageText, systemImage: "function")
@@ -2682,6 +2746,7 @@ private struct VehicleDetailPanel: View {
 
             RawFieldSection(title: "车辆原始字段", fields: snapshot.vehicle.raw)
             RawFieldSection(title: "状态原始字段", fields: snapshot.state.rawStatus)
+            RawFieldSection(title: "电池原始字段", fields: snapshot.state.rawBattery)
             RawFieldSection(title: "行程原始字段", fields: snapshot.state.rawTravel)
         }
         .padding(16)
@@ -3517,6 +3582,10 @@ private func friendlyRawFieldName(_ key: String) -> String {
         "and_mac": "Android MAC",
         "battery": "电量",
         "battery_exist": "电池存在",
+        "battery_list": "电池列表",
+        "batteryList": "电池列表",
+        "battery_main": "主电池",
+        "batteryMain": "主电池",
         "battery_voltage": "电池电压",
         "batteryVoltage": "电池电压",
         "battery_vol": "电池电压",
@@ -3540,8 +3609,12 @@ private func friendlyRawFieldName(_ key: String) -> String {
         "batt_temp": "电池温度",
         "battTemp": "电池温度",
         "bms": "电池管理",
+        "bms_cycle": "循环次数",
+        "bmsCycle": "循环次数",
         "bmsInfo": "电池管理",
         "bms_info": "电池管理",
+        "bms_volt": "电池电压",
+        "bmsVolt": "电池电压",
         "bms_voltage": "电池电压",
         "bmsVoltage": "电池电压",
         "bms_temperature": "电池温度",
@@ -3554,7 +3627,10 @@ private func friendlyRawFieldName(_ key: String) -> String {
         "begin_time": "开始时间",
         "beginTime": "开始时间",
         "charging": "充电状态",
+        "charging_power": "充电功率",
+        "chargingPower": "充电功率",
         "chargingState": "充电状态",
+        "charging_protection": "充电保护",
         "color": "颜色",
         "cost_time": "用时",
         "costTime": "用时",

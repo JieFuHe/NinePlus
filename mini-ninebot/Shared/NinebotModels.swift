@@ -234,6 +234,8 @@ struct NinebotVehicleState: Codable, Equatable {
     var battery: Int?
     var batteryVoltage: Double?
     var batteryTemperature: Double?
+    var batteryCycleCount: Int?
+    var chargingPower: Double?
     var endurance: Double?
     var aiEstimatedMileage: Double?
     var isCharging: Bool?
@@ -255,6 +257,7 @@ struct NinebotVehicleState: Codable, Equatable {
     var updatedAt: Date
     var rawStatus: [String: JSONValue]?
     var rawTravel: [String: JSONValue]?
+    var rawBattery: [String: JSONValue]?
 
     var batteryText: String {
         guard let battery else { return "--%" }
@@ -274,6 +277,16 @@ struct NinebotVehicleState: Codable, Equatable {
     var batteryTemperatureText: String {
         guard let batteryTemperature else { return "接口未返回" }
         return "\(Self.numberText(batteryTemperature, maximumFractionDigits: 1)) °C"
+    }
+
+    var batteryCycleCountText: String {
+        guard let batteryCycleCount else { return "接口未返回" }
+        return "\(batteryCycleCount) 次"
+    }
+
+    var chargingPowerText: String {
+        guard let chargingPower else { return "接口未返回" }
+        return "\(Self.numberText(chargingPower, maximumFractionDigits: 0)) W"
     }
 
     var enduranceText: String {
@@ -895,6 +908,8 @@ struct NinebotDashboard: Codable, Equatable {
                     battery: 86,
                     batteryVoltage: 52.3,
                     batteryTemperature: 28.5,
+                    batteryCycleCount: 36,
+                    chargingPower: 0,
                     endurance: 42.5,
                     aiEstimatedMileage: 38.2,
                     isCharging: false,
@@ -947,6 +962,16 @@ struct NinebotDashboard: Codable, Equatable {
                         "total_mileages": .number(128.4),
                         "ec": .number(3.2),
                         "used_electricity": .number(2.8)
+                    ],
+                    rawBattery: [
+                        "battery_list": .array([
+                            .object([
+                                "bms_volt": .number(52.3),
+                                "bat_temp": .number(28.5),
+                                "bms_cycle": .number(36)
+                            ])
+                        ]),
+                        "charging_power": .number(0)
                     ]
                 )
             )

@@ -96,7 +96,8 @@ struct NinebotProxyClient {
                 path: ["vehicles", vehicle.sn, "travel"],
                 queryItems: [URLQueryItem(name: "month", value: Self.currentMonthString())]
             )
-            let state = Self.vehicleState(status: status, travel: travel, updatedAt: Date())
+            let battery = try? await request(method: "GET", path: ["vehicles", vehicle.sn, "battery"])
+            let state = Self.vehicleState(status: status, travel: travel, battery: battery, updatedAt: Date())
             snapshots.append(NinebotVehicleSnapshot(vehicle: vehicle, state: state))
         }
 
@@ -253,11 +254,14 @@ private extension NinebotProxyClient {
         )
     }
 
-    static func vehicleState(status: JSONValue?, travel: JSONValue?, updatedAt: Date) -> NinebotVehicleState {
+    static func vehicleState(status: JSONValue?, travel: JSONValue?, battery: JSONValue? = nil, updatedAt: Date) -> NinebotVehicleState {
         let statusObject = status?.objectValue ?? [:]
         let travelObject = travel?.objectValue ?? [:]
+        let batteryPayloadObject = battery?.objectValue ?? [:]
         let batteryObject = firstObject(["battery", "batteryInfo", "battery_info", "bms", "bmsInfo", "bms_info"], in: statusObject) ?? [:]
-        let batterySources = [statusObject, batteryObject]
+        let batteryListObject = firstArrayObject(["battery_list", "batteryList", "batteries"], in: batteryPayloadObject) ?? [:]
+        let batteryMainObject = firstObject(["battery_main", "batteryMain"], in: batteryPayloadObject) ?? [:]
+        let batterySources = [statusObject, batteryObject, batteryPayloadObject, batteryListObject, batteryMainObject]
         let loc = statusObject["loc"]?.objectValue
         let locationInfo = statusObject["locationInfo"]?.objectValue
         let lockNumber = loc?["lock"]?.intValue ?? statusObject["lock_status"]?.intValue
@@ -269,7 +273,9 @@ private extension NinebotProxyClient {
         let dailyMileageRecords = dailyMileageRecords(from: travelObject)
 
         return NinebotVehicleState(
-            battery: firstInt(["dump_energy", "dumpEnergy"], in: statusObject),
+            battery: firstInt(["dump_energy", "dumpEnergy"], in: statusObject)
+                ?? firstInt(["electricity", "dump_energy", "dumpEnergy"], in: batteryPayloadObject)
+                ?? firstInt(["electricity", "dump_energy", "dumpEnergy"], in: batteryListObject),
             batteryVoltage: normalizedBatteryVoltage(
                 firstDouble(
                     [
@@ -283,6 +289,8 @@ private extension NinebotProxyClient {
                         "batVoltage",
                         "bms_voltage",
                         "bmsVoltage",
+                        "bms_volt",
+                        "bmsVolt",
                         "voltage",
                         "volt"
                     ],
@@ -308,18 +316,25 @@ private extension NinebotProxyClient {
                         "bmsTemperature",
                         "bms_temp",
                         "bmsTemp",
+                        "bat_temp",
+                        "batTemp",
                         "temperature",
                         "temp"
                     ],
                     in: batterySources
                 )
             ),
+            batteryCycleCount: firstInt(["bms_cycle", "bmsCycle", "cycle", "cycles"], in: batteryListObject)
+                ?? firstInt(["bms_cycle", "bmsCycle", "cycle", "cycles"], in: batteryPayloadObject),
+            chargingPower: firstDouble(["charging_power", "chargingPower", "charge_power", "chargePower"], in: batteryPayloadObject),
             endurance: firstDouble(["precise_estimate_mileage", "preciseEstimateMileage", "estimate_mileage", "estimateMileage"], in: statusObject),
             aiEstimatedMileage: firstDouble(["ai_estimate_mileage", "aiEstimateMileage", "ai_estimated_mileage", "aiEstimatedMileage"], in: statusObject),
-            isCharging: firstBoolLike(["charging", "chargingState"], in: statusObject, trueValue: 1),
+            isCharging: firstBoolLike(["charging", "chargingState"], in: statusObject, trueValue: 1)
+                ?? firstBoolLike(["charging", "chargingState"], in: batteryPayloadObject, trueValue: 1),
             isPoweredOn: firstBoolLike(["pwr", "powerStatus"], in: statusObject, trueValue: 1),
             isLocked: lockNumber.map { $0 == 1 },
-            remainingChargeTime: firstDouble(["remain_charge_time", "remainChargeTime", "remainingChargeTime"], in: statusObject),
+            remainingChargeTime: firstDouble(["remain_charge_time", "remainChargeTime", "remainingChargeTime"], in: statusObject)
+                ?? firstDouble(["remain_charge_time", "remainChargeTime", "remainingChargeTime"], in: batteryPayloadObject),
             locationDescription: firstString(["locationDesc", "desc"], in: locationInfo ?? [:]),
             latitude: normalizedCoordinate(
                 loc?["lat"]?.doubleValue ?? locationInfo?["lat"]?.doubleValue,
@@ -341,7 +356,8 @@ private extension NinebotProxyClient {
             dailyMileageRecords: dailyMileageRecords.isEmpty ? nil : dailyMileageRecords,
             updatedAt: updatedAt,
             rawStatus: statusObject.isEmpty ? nil : statusObject,
-            rawTravel: travelObject.isEmpty ? nil : travelObject
+            rawTravel: travelObject.isEmpty ? nil : travelObject,
+            rawBattery: batteryPayloadObject.isEmpty ? nil : batteryPayloadObject
         )
     }
 
@@ -451,6 +467,18 @@ private extension NinebotProxyClient {
         for key in keys {
             if let value = object[key]?.objectValue {
                 return value
+            }
+        }
+        return nil
+    }
+
+    static func firstArrayObject(_ keys: [String], in object: [String: JSONValue]) -> [String: JSONValue]? {
+        for key in keys {
+            guard let array = object[key]?.arrayValue else { continue }
+            for value in array {
+                if let objectValue = value.objectValue {
+                    return objectValue
+                }
             }
         }
         return nil

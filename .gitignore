@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+
+# Xcode user state
+xcuserdata/
+*.xcuserstate
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+
+# Build output
+DerivedData/
+build/
+*.xcarchive
+*.ipa
+
+# Signing material
+*.mobileprovision
+*.provisionprofile
+*.p12
+*.cer
+
+# Local environment
+.env
+.env.*
+!.env.example

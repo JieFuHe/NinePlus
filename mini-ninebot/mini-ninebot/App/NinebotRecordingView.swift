@@ -101,6 +101,7 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
     private var vehicleSN: String?
     private var lastLocation: CLLocation?
     private var lastSpeedMPS: Double?
+    private var lastAcceptedLocationAt: Date?
     private var speedSamples: [Double] = []
     private var lastMotionTimestamp: TimeInterval?
     private var ignoreLocationUntil: Date?
@@ -112,6 +113,8 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
     private let maximumLocationAge: TimeInterval = 8
     private let minimumLocationDeltaTime: TimeInterval = 0.2
     private let maximumLocationDeltaTimeForSpeed: TimeInterval = 20
+    private let maximumLocationGapBeforeCooldown: TimeInterval = 8
+    private let recoveryCooldownDuration: TimeInterval = 1.5
 
     override init() {
         super.init()
@@ -197,6 +200,7 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
         speedSamples = []
         lastLocation = nil
         lastSpeedMPS = nil
+        lastAcceptedLocationAt = nil
         lastMotionTimestamp = nil
         ignoreLocationUntil = Date().addingTimeInterval(1.2)
         startedAt = Date()
@@ -211,10 +215,12 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
         isRecording = false
         self.endedAt = endedAt
 
+        let correctedDistanceMeters = NinebotRecordedRide.recalculatedDistanceMeters(from: points)
+        let finalDistanceMeters = correctedDistanceMeters > 0 ? correctedDistanceMeters : distanceMeters
         let durationHours = max(endedAt.timeIntervalSince(startedAt) / 3600, 0)
         let averageSpeed: Double
         if durationHours > 0 {
-            averageSpeed = distanceKilometers / durationHours
+            averageSpeed = (finalDistanceMeters / 1000) / durationHours
         } else if !speedSamples.isEmpty {
             averageSpeed = speedSamples.reduce(0, +) / Double(speedSamples.count)
         } else {
@@ -225,7 +231,7 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
             vehicleSN: vehicleSN,
             startedAt: startedAt,
             endedAt: endedAt,
-            distanceMeters: distanceMeters,
+            distanceMeters: finalDistanceMeters,
             maxSpeedKmh: maxSpeedKmh,
             averageSpeedKmh: averageSpeed,
             maxAccelerationG: maxAccelerationG,
@@ -315,8 +321,22 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
         let deltaTime = previousDate.map { location.timestamp.timeIntervalSince($0) } ?? 0
         let segmentDistance = previousLocation.map { location.distance(from: $0) } ?? 0
 
+        if shouldTreatAsRecoveredLocation(location, deltaTime: deltaTime) {
+            let point = trackPoint(for: location, speedKmh: 0, accelerationG: 0)
+            currentLocationPoint = point
+            currentSpeedKmh = 0
+            if !motionManager.isDeviceMotionActive {
+                currentAccelerationG = 0
+            }
+            lastLocation = location
+            lastSpeedMPS = nil
+            lastAcceptedLocationAt = location.timestamp
+            ignoreLocationUntil = Date().addingTimeInterval(recoveryCooldownDuration)
+            return
+        }
+
         let speedMPS: Double
-        if location.speed >= 0, (location.speedAccuracy <= 0 || location.speedAccuracy <= 8) {
+        if location.speed >= 0, location.speedAccuracy >= 0, location.speedAccuracy <= 8 {
             speedMPS = location.speed
         } else if deltaTime >= minimumLocationDeltaTime, deltaTime <= maximumLocationDeltaTimeForSpeed {
             speedMPS = max(segmentDistance / deltaTime, 0)
@@ -326,12 +346,7 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
 
         let speedKmh = speedMPS * 3.6
         guard speedKmh.isFinite, speedKmh <= maximumReasonableSpeedKmh else {
-            currentSpeedKmh = 0
-            if !motionManager.isDeviceMotionActive {
-                currentAccelerationG = 0
-            }
-            lastLocation = location
-            lastSpeedMPS = nil
+            rejectSpeedSample(from: location)
             return
         }
 
@@ -343,6 +358,12 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
         } else {
             gpsAccelerationG = 0
         }
+
+        guard gpsAccelerationG.isFinite, gpsAccelerationG <= maximumReasonableGPSAccelerationG else {
+            rejectSpeedSample(from: location)
+            return
+        }
+
         let sanitizedGPSAccelerationG = gpsAccelerationG.isFinite && gpsAccelerationG <= maximumReasonableGPSAccelerationG ? gpsAccelerationG : 0
 
         currentSpeedKmh = speedKmh
@@ -350,14 +371,7 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
             currentAccelerationG = sanitizedGPSAccelerationG
         }
 
-        let point = NinebotRideTrackPoint(
-            date: location.timestamp,
-            latitude: location.coordinate.latitude,
-            longitude: location.coordinate.longitude,
-            speedKmh: speedKmh,
-            accelerationG: currentAccelerationG,
-            horizontalAccuracy: location.horizontalAccuracy
-        )
+        let point = trackPoint(for: location, speedKmh: speedKmh, accelerationG: currentAccelerationG)
         currentLocationPoint = point
 
         if isRecording {
@@ -379,6 +393,41 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
 
         lastLocation = location
         lastSpeedMPS = speedMPS
+        lastAcceptedLocationAt = location.timestamp
+    }
+
+    private func rejectSpeedSample(from location: CLLocation) {
+        let point = trackPoint(for: location, speedKmh: 0, accelerationG: 0)
+        currentLocationPoint = point
+        currentSpeedKmh = 0
+        if !motionManager.isDeviceMotionActive {
+            currentAccelerationG = 0
+        }
+        lastLocation = location
+        lastSpeedMPS = nil
+        lastAcceptedLocationAt = location.timestamp
+    }
+
+    private func shouldTreatAsRecoveredLocation(_ location: CLLocation, deltaTime: TimeInterval) -> Bool {
+        if let lastAcceptedLocationAt {
+            let acceptedGap = location.timestamp.timeIntervalSince(lastAcceptedLocationAt)
+            if acceptedGap > maximumLocationGapBeforeCooldown {
+                return true
+            }
+        }
+
+        return deltaTime > maximumLocationGapBeforeCooldown
+    }
+
+    private func trackPoint(for location: CLLocation, speedKmh: Double, accelerationG: Double) -> NinebotRideTrackPoint {
+        NinebotRideTrackPoint(
+            date: location.timestamp,
+            latitude: location.coordinate.latitude,
+            longitude: location.coordinate.longitude,
+            speedKmh: speedKmh,
+            accelerationG: accelerationG,
+            horizontalAccuracy: location.horizontalAccuracy
+        )
     }
 
     private func isUsable(_ location: CLLocation) -> Bool {
@@ -627,6 +676,18 @@ private struct RecordingTrackPreview: View {
                             .stroke(Color.teslaGreen, lineWidth: 4)
                     }
 
+                    ForEach(Array(sampledCoordinates.enumerated()), id: \.offset) { _, coordinate in
+                        Annotation("轨迹点", coordinate: coordinate) {
+                            Circle()
+                                .fill(Color.teslaGreen)
+                                .frame(width: 5, height: 5)
+                                .overlay {
+                                    Circle()
+                                        .stroke(Color(.systemBackground), lineWidth: 1)
+                                }
+                        }
+                    }
+
                     if let last = displayCoordinates.last {
                         Marker("当前位置", systemImage: "location.fill", coordinate: last)
                             .tint(Color.teslaGreen)
@@ -671,6 +732,10 @@ private struct RecordingTrackPreview: View {
         points.map {
             recordingMapCoordinate(latitude: $0.latitude, longitude: $0.longitude)
         }
+    }
+
+    private var sampledCoordinates: [CLLocationCoordinate2D] {
+        sampledMapCoordinates(coordinates)
     }
 
     private var currentCoordinate: CLLocationCoordinate2D? {
@@ -921,6 +986,18 @@ private struct RecordedRideTrackMap: View {
                             .stroke(Color.teslaGreen, lineWidth: 4)
                     }
 
+                    ForEach(Array(record.sampledTrackCoordinates().enumerated()), id: \.offset) { _, coordinate in
+                        Annotation("轨迹点", coordinate: coordinate) {
+                            Circle()
+                                .fill(Color.teslaGreen)
+                                .frame(width: 5, height: 5)
+                                .overlay {
+                                    Circle()
+                                        .stroke(Color(.systemBackground), lineWidth: 1)
+                                }
+                        }
+                    }
+
                     if let first = record.recordingCoordinates.first {
                         Marker("开始", systemImage: "play.fill", coordinate: first)
                             .tint(Color.teslaGreen)
@@ -1120,9 +1197,7 @@ private struct RideAssociationSheet: View {
 
 private extension NinebotRecordedRide {
     var recordingCoordinates: [CLLocationCoordinate2D] {
-        points.map {
-            recordingMapCoordinate(latitude: $0.latitude, longitude: $0.longitude)
-        }
+        trackCoordinates
     }
 }
 
@@ -1170,6 +1245,13 @@ private func formatRecordingNumber(
 }
 
 private func recordingMapCoordinate(latitude: Double, longitude: Double) -> CLLocationCoordinate2D {
-    let mapCoordinate = NinebotCoordinateTransform.gcj02Coordinate(latitude: latitude, longitude: longitude)
-    return CLLocationCoordinate2D(latitude: mapCoordinate.latitude, longitude: mapCoordinate.longitude)
+    NinebotCoordinateTransform.mapKitCoordinate(latitude: latitude, longitude: longitude)
+}
+
+private func sampledMapCoordinates(_ coordinates: [CLLocationCoordinate2D], maxCount: Int = 120) -> [CLLocationCoordinate2D] {
+    guard coordinates.count > maxCount, maxCount > 1 else { return coordinates }
+    let step = Double(coordinates.count - 1) / Double(maxCount - 1)
+    return (0..<maxCount).map { index in
+        coordinates[min(Int((Double(index) * step).rounded()), coordinates.count - 1)]
+    }
 }

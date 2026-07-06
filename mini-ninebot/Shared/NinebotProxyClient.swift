@@ -115,6 +115,21 @@ struct NinebotProxyClient {
         )
     }
 
+    func fetchTravelDetail(sn: String, travelID: String) async throws -> NinebotRideDetail {
+        let payload = try await request(
+            method: "GET",
+            path: ["vehicles", sn, "travel", travelID]
+        )
+
+        return NinebotRideDetail(
+            vehicleSN: sn,
+            rideID: travelID,
+            fetchedAt: Date(),
+            raw: payload,
+            parsedRecord: Self.rideRecord(from: payload, index: 0)
+        )
+    }
+
     private func request(
         method: String,
         path: [String],

@@ -2,11 +2,20 @@ import SwiftUI
 import UIKit
 import WidgetKit
 
+#if canImport(ActivityKit)
+import ActivityKit
+#endif
+
 @main
 struct NinebotWidgetBundle: WidgetBundle {
     var body: some Widget {
         NinebotStatusWidget()
         NinebotLockScreenWidget()
+        #if canImport(ActivityKit)
+        if #available(iOS 16.1, *) {
+            NinebotChargingLiveActivity()
+        }
+        #endif
     }
 }
 
@@ -36,6 +45,360 @@ struct NinebotLockScreenWidget: Widget {
         .supportedFamilies([.accessoryCircular, .accessoryRectangular, .accessoryInline])
     }
 }
+
+#if canImport(ActivityKit)
+@available(iOS 16.1, *)
+struct NinebotChargingLiveActivity: Widget {
+    var body: some WidgetConfiguration {
+        ActivityConfiguration(for: NinebotChargingActivityAttributes.self) { context in
+            NinebotChargingLiveActivityCard(
+                attributes: context.attributes,
+                state: context.state
+            )
+            .activityBackgroundTint(WidgetTheme.chargingActivityBackground)
+            .activitySystemActionForegroundColor(WidgetTheme.green)
+        } dynamicIsland: { context in
+            DynamicIsland {
+                DynamicIslandExpandedRegion(.leading) {
+                    ChargingIslandTitle(attributes: context.attributes, state: context.state)
+                        .padding(.leading, 4)
+                        .padding(.top, 2)
+                }
+                DynamicIslandExpandedRegion(.trailing) {
+                    ChargingIslandRemaining(state: context.state)
+                        .padding(.top, 2)
+                        .padding(.trailing, 12)
+                }
+                DynamicIslandExpandedRegion(.bottom) {
+                    ChargingIslandBottom(state: context.state)
+                        .padding(.horizontal, 4)
+                        .padding(.top, 4)
+                }
+            } compactLeading: {
+                Image(systemName: "bolt.fill")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(WidgetTheme.green)
+                    .frame(width: 16, height: 16)
+            } compactTrailing: {
+                Text("\(context.state.battery)%")
+                    .font(.caption2.monospacedDigit().weight(.bold))
+                    .foregroundStyle(WidgetTheme.green)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            } minimal: {
+                Image(systemName: "bolt.fill")
+                    .foregroundStyle(WidgetTheme.green)
+            }
+            .keylineTint(WidgetTheme.green)
+        }
+        .configurationDisplayName("九号充电")
+        .description("充电时在锁屏和灵动岛显示电量、预计时间和电池状态。")
+    }
+}
+
+@available(iOS 16.1, *)
+private struct NinebotChargingLiveActivityCard: View {
+    var attributes: NinebotChargingActivityAttributes
+    var state: NinebotChargingActivityAttributes.ContentState
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        ZStack {
+            chargingCardGradient(for: colorScheme)
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center) {
+                    Label("充电中", systemImage: "bolt.fill")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(chargingCardPrimaryText(for: colorScheme))
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "bolt.batteryblock.fill")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(chargingCardPrimaryText(for: colorScheme).opacity(0.90))
+                }
+
+                HStack(alignment: .bottom, spacing: 10) {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Text("\(state.battery)%")
+                            .font(.system(size: 38, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(WidgetTheme.green)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.68)
+
+                        Text(chargingRangeText(state))
+                            .font(.system(size: 31, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(WidgetTheme.green)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.58)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text("剩余时间")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(chargingCardSecondaryText(for: colorScheme))
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        ChargingRemainingText(estimatedFullAt: state.estimatedFullAt)
+                            .font(.system(size: 29, weight: .heavy, design: .rounded).italic())
+                            .monospacedDigit()
+                            .foregroundStyle(chargingCardSecondaryText(for: colorScheme).opacity(0.92))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.52)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                    .frame(width: 112, alignment: .trailing)
+                }
+
+                ChargingLiveProgressBar(value: Double(state.battery) / 100)
+                    .frame(height: 6)
+                    .padding(.top, 1)
+
+                HStack(spacing: 8) {
+                    ChargingLiveMetric(value: chargingPowerText(state), title: "充电功率")
+                    ChargingLiveMetric(value: chargingTemperatureText(state), title: "电池温度")
+                    ChargingLiveMetric(value: chargingSpeedText(state), title: "充电速度")
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 15)
+            .padding(.bottom, 14)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+    }
+}
+
+@available(iOS 16.1, *)
+private struct ChargingIslandTitle: View {
+    var attributes: NinebotChargingActivityAttributes
+    var state: NinebotChargingActivityAttributes.ContentState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label("充电中", systemImage: "bolt.fill")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(WidgetTheme.green)
+            Text(attributes.vehicleName)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.74))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            Text("\(state.battery)%")
+                .font(.system(size: 24, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(WidgetTheme.green)
+        }
+        .frame(maxWidth: 124, alignment: .leading)
+    }
+}
+
+@available(iOS 16.1, *)
+private struct ChargingIslandRemaining: View {
+    var state: NinebotChargingActivityAttributes.ContentState
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            Text("剩余")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.58))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            ChargingRemainingText(estimatedFullAt: state.estimatedFullAt)
+                .font(.system(size: 22, weight: .heavy, design: .rounded).italic())
+                .monospacedDigit()
+                .foregroundStyle(.white.opacity(0.82))
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            Text(chargingRangeText(state))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(WidgetTheme.green)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .frame(width: 88, alignment: .trailing)
+    }
+}
+
+@available(iOS 16.1, *)
+private struct ChargingIslandBottom: View {
+    var state: NinebotChargingActivityAttributes.ContentState
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ChargingLiveProgressBar(value: Double(state.battery) / 100)
+                .frame(height: 5)
+
+            HStack(spacing: 8) {
+                ChargingIslandMetric(value: chargingPowerText(state), title: "功率")
+                ChargingIslandMetric(value: chargingTemperatureText(state), title: "温度")
+                ChargingIslandMetric(value: chargingSpeedText(state), title: "速度")
+            }
+        }
+    }
+}
+
+@available(iOS 16.1, *)
+private struct ChargingCompactRemainingText: View {
+    var state: NinebotChargingActivityAttributes.ContentState
+
+    var body: some View {
+        ChargingRemainingText(estimatedFullAt: state.estimatedFullAt)
+            .font(.caption2.monospacedDigit().weight(.bold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+    }
+}
+
+private struct ChargingRemainingText: View {
+    var estimatedFullAt: Date?
+
+    var body: some View {
+        TimelineView(.periodic(from: Date(), by: 30)) { context in
+            Text(remainingText(now: context.date))
+        }
+    }
+
+    private func remainingText(now: Date) -> String {
+        guard let estimatedFullAt else { return "--" }
+        let remainingSeconds = estimatedFullAt.timeIntervalSince(now)
+        guard remainingSeconds > 0 else { return "0分" }
+
+        let totalMinutes = max(Int(ceil(remainingSeconds / 60)), 1)
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+
+        if hours > 0 {
+            return "\(hours):\(String(format: "%02d", minutes))"
+        }
+        return "\(minutes)分"
+    }
+}
+
+private struct ChargingLiveMetric: View {
+    var value: String
+    var title: String
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(spacing: 3) {
+            Text(value)
+                .font(.system(size: 23, weight: .heavy, design: .rounded).italic())
+                .monospacedDigit()
+                .foregroundStyle(chargingCardSecondaryText(for: colorScheme).opacity(0.96))
+                .lineLimit(1)
+                .minimumScaleFactor(0.55)
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(chargingCardSecondaryText(for: colorScheme))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+private struct ChargingIslandMetric: View {
+    var value: String
+    var title: String
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Text(value)
+                .font(.caption.monospacedDigit().weight(.bold))
+                .foregroundStyle(.white.opacity(0.86))
+                .lineLimit(1)
+                .minimumScaleFactor(0.62)
+            Text(title)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.white.opacity(0.52))
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+private struct ChargingLiveProgressBar: View {
+    var value: Double
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(chargingProgressTrackColor(for: colorScheme))
+                Capsule()
+                    .fill(WidgetTheme.green)
+                    .frame(width: max(proxy.size.width * min(max(value, 0), 1), 8))
+            }
+        }
+    }
+}
+
+private func chargingCardGradient(for colorScheme: ColorScheme) -> LinearGradient {
+    if colorScheme == .dark {
+        return LinearGradient(
+            colors: [
+                Color(red: 0.07, green: 0.08, blue: 0.11),
+                Color(red: 0.045, green: 0.08, blue: 0.075),
+                Color(red: 0.055, green: 0.11, blue: 0.085)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    return LinearGradient(
+        colors: [
+            Color(red: 0.96, green: 0.90, blue: 1.0),
+            Color(red: 0.91, green: 0.96, blue: 1.0),
+            Color(red: 0.82, green: 1.0, blue: 0.96)
+        ],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+}
+
+private func chargingCardPrimaryText(for colorScheme: ColorScheme) -> Color {
+    colorScheme == .dark ? Color.white.opacity(0.92) : Color.black.opacity(0.86)
+}
+
+private func chargingCardSecondaryText(for colorScheme: ColorScheme) -> Color {
+    colorScheme == .dark ? Color.white.opacity(0.62) : Color.black.opacity(0.46)
+}
+
+private func chargingProgressTrackColor(for colorScheme: ColorScheme) -> Color {
+    colorScheme == .dark ? Color.white.opacity(0.16) : Color.black.opacity(0.12)
+}
+
+@available(iOS 16.1, *)
+private func chargingRangeText(_ state: NinebotChargingActivityAttributes.ContentState) -> String {
+    guard let range = state.estimatedRange else { return "--km" }
+    return "\(formatWidgetNumber(range, maximumFractionDigits: 0))km"
+}
+
+@available(iOS 16.1, *)
+private func chargingPowerText(_ state: NinebotChargingActivityAttributes.ContentState) -> String {
+    guard let power = state.chargingPower else { return "--W" }
+    return "\(formatWidgetNumber(power, maximumFractionDigits: 0))W"
+}
+
+@available(iOS 16.1, *)
+private func chargingTemperatureText(_ state: NinebotChargingActivityAttributes.ContentState) -> String {
+    guard let temperature = state.batteryTemperature else { return "--°C" }
+    return "\(formatWidgetNumber(temperature, maximumFractionDigits: 0))°C"
+}
+
+@available(iOS 16.1, *)
+private func chargingSpeedText(_ state: NinebotChargingActivityAttributes.ContentState) -> String {
+    guard let speed = state.chargingSpeed else { return "--km/h" }
+    return "\(formatWidgetNumber(speed, maximumFractionDigits: 0))km/h"
+}
+#endif
 
 private struct NinebotHomeWidgetView: View {
     @Environment(\.widgetFamily) private var family
@@ -799,6 +1162,10 @@ private enum WidgetTheme {
     static let controlBackground = dynamic(
         light: UIColor(red: 0.91, green: 0.925, blue: 0.94, alpha: 1),
         dark: UIColor(red: 0.125, green: 0.135, blue: 0.152, alpha: 1)
+    )
+    static let chargingActivityBackground = dynamic(
+        light: UIColor(red: 0.91, green: 0.97, blue: 0.96, alpha: 1),
+        dark: UIColor(red: 0.035, green: 0.045, blue: 0.055, alpha: 1)
     )
     static let primaryText = dynamic(
         light: UIColor(red: 0.055, green: 0.065, blue: 0.08, alpha: 1),

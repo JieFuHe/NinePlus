@@ -1,7 +1,8 @@
+import CoreLocation
 import Foundation
 
 enum NinebotAppGroup {
-    static let identifier = "group.com.vvovvo.mini-ninebot"
+    static let identifier = "group.com.example.NineBotPlus"
 }
 
 struct NinebotProxyConfiguration: Codable, Equatable {
@@ -91,6 +92,299 @@ struct NinebotRideRecord: Codable, Equatable, Identifiable {
     var durationMinutes: Double?
     var speed: Double?
     var raw: [String: JSONValue]?
+}
+
+struct NinebotRideDetail: Codable, Equatable, Identifiable {
+    var vehicleSN: String
+    var rideID: String
+    var fetchedAt: Date
+    var raw: JSONValue
+    var parsedRecord: NinebotRideRecord?
+
+    var id: String {
+        "\(vehicleSN)|\(rideID)"
+    }
+
+    var rawObject: [String: JSONValue]? {
+        raw.objectValue
+    }
+}
+
+extension NinebotRideDetail {
+    var interfaceTrackCoordinates: [CLLocationCoordinate2D] {
+        Self.bestTrackCoordinates(from: raw)
+    }
+
+    private static func bestTrackCoordinates(from value: JSONValue) -> [CLLocationCoordinate2D] {
+        let candidateValues = trackCandidateValues(from: value)
+        let parsedCandidates = candidateValues
+            .map { trackCoordinates(from: $0) }
+            .filter { $0.count > 1 }
+
+        return parsedCandidates.max { $0.count < $1.count } ?? []
+    }
+
+    private static func trackCandidateValues(from value: JSONValue) -> [JSONValue] {
+        let trackKeys: Set<String> = [
+            "trial",
+            "trail",
+            "trace",
+            "track",
+            "tracks",
+            "track_list",
+            "trackList",
+            "trajectory",
+            "trajectory_list",
+            "trajectoryList",
+            "points",
+            "point_list",
+            "pointList",
+            "gps",
+            "gps_list",
+            "gpsList",
+            "location_list",
+            "locationList",
+            "coordinate_list",
+            "coordinateList"
+        ]
+
+        var values: [JSONValue] = []
+
+        func collect(_ value: JSONValue) {
+            if let object = value.objectValue {
+                for (key, child) in object {
+                    if trackKeys.contains(key) {
+                        values.append(child)
+                    }
+                    collect(child)
+                }
+            } else if let array = value.arrayValue {
+                for child in array {
+                    collect(child)
+                }
+            }
+        }
+
+        collect(value)
+        return values
+    }
+
+    private static func trackCoordinates(from value: JSONValue) -> [CLLocationCoordinate2D] {
+        if let array = value.arrayValue {
+            return coordinates(fromArray: array)
+        }
+
+        if let object = value.objectValue {
+            if let coordinate = coordinate(fromObject: object) {
+                return [coordinate]
+            }
+
+            let nestedCandidates = ["trial", "trail", "trace", "track", "tracks", "points", "list", "data", "gps", "locations", "coordinates"]
+            for key in nestedCandidates {
+                if let child = object[key] {
+                    let coordinates = trackCoordinates(from: child)
+                    if coordinates.count > 1 {
+                        return coordinates
+                    }
+                }
+            }
+        }
+
+        if let string = value.stringValue {
+            return coordinates(fromString: string)
+        }
+
+        return []
+    }
+
+    private static func coordinates(fromArray array: [JSONValue]) -> [CLLocationCoordinate2D] {
+        var result: [CLLocationCoordinate2D] = []
+
+        for value in array {
+            if let object = value.objectValue, let coordinate = coordinate(fromObject: object) {
+                result.append(coordinate)
+                continue
+            }
+
+            if let pair = value.arrayValue, let coordinate = coordinate(fromPair: pair) {
+                result.append(coordinate)
+                continue
+            }
+
+            if let string = value.stringValue {
+                result.append(contentsOf: coordinates(fromString: string))
+            }
+        }
+
+        return deduplicated(result)
+    }
+
+    private static func coordinate(fromObject object: [String: JSONValue]) -> CLLocationCoordinate2D? {
+        let latitude = firstDouble(["lat", "latitude", "y", "gcj_lat", "gcjLat", "wgs_lat", "wgsLat"], in: object)
+        let longitude = firstDouble(["lon", "lng", "longitude", "x", "gcj_lng", "gcjLng", "gcj_lon", "gcjLon", "wgs_lng", "wgsLng", "wgs_lon", "wgsLon"], in: object)
+
+        if let coordinate = coordinate(latitude: latitude, longitude: longitude) {
+            return coordinate
+        }
+
+        for key in ["location", "loc", "coordinate", "coordinates", "point", "gps"] {
+            if let value = object[key] {
+                let coordinates = trackCoordinates(from: value)
+                if let first = coordinates.first {
+                    return first
+                }
+            }
+        }
+
+        return nil
+    }
+
+    private static func coordinate(fromPair pair: [JSONValue]) -> CLLocationCoordinate2D? {
+        guard pair.count >= 2,
+              let first = pair[0].doubleValue,
+              let second = pair[1].doubleValue else {
+            return nil
+        }
+
+        if abs(first) > 90, abs(second) <= 90 {
+            return coordinate(latitude: second, longitude: first)
+        }
+
+        return coordinate(latitude: first, longitude: second)
+    }
+
+    private static func coordinates(fromString string: String) -> [CLLocationCoordinate2D] {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        if let jsonCoordinates = coordinatesFromJSONString(trimmed), jsonCoordinates.count > 1 {
+            return jsonCoordinates
+        }
+
+        let separators = CharacterSet(charactersIn: ";|\n")
+        let segments = trimmed.components(separatedBy: separators)
+        let coordinates = segments.compactMap { segment -> CLLocationCoordinate2D? in
+            let parts = segment
+                .split { character in
+                    character == "," || character == " " || character == "\t"
+                }
+                .compactMap { Double($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            return coordinate(fromPair: parts.map { .number($0) })
+        }
+
+        if coordinates.count > 1 {
+            return deduplicated(coordinates)
+        }
+
+        return []
+    }
+
+    private static func coordinatesFromJSONString(_ string: String) -> [CLLocationCoordinate2D]? {
+        guard string.first == "{" || string.first == "[" else { return nil }
+        guard let data = string.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) else {
+            return nil
+        }
+        return coordinates(fromAny: object)
+    }
+
+    private static func coordinates(fromAny value: Any) -> [CLLocationCoordinate2D] {
+        if let array = value as? [Any] {
+            var result: [CLLocationCoordinate2D] = []
+            for item in array {
+                result.append(contentsOf: coordinates(fromAny: item))
+            }
+
+            if result.isEmpty,
+               array.count >= 2,
+               let first = number(fromAny: array[0]),
+               let second = number(fromAny: array[1]),
+               let coordinate = coordinate(fromPair: [.number(first), .number(second)]) {
+                return [coordinate]
+            }
+
+            return deduplicated(result)
+        }
+
+        if let object = value as? [String: Any] {
+            if let coordinate = coordinate(fromAnyObject: object) {
+                return [coordinate]
+            }
+
+            var result: [CLLocationCoordinate2D] = []
+            for child in object.values {
+                result.append(contentsOf: coordinates(fromAny: child))
+            }
+            return deduplicated(result)
+        }
+
+        return []
+    }
+
+    private static func coordinate(fromAnyObject object: [String: Any]) -> CLLocationCoordinate2D? {
+        let latitude = firstNumber(["lat", "latitude", "y", "gcj_lat", "gcjLat", "wgs_lat", "wgsLat"], in: object)
+        let longitude = firstNumber(["lon", "lng", "longitude", "x", "gcj_lng", "gcjLng", "gcj_lon", "gcjLon", "wgs_lng", "wgsLng", "wgs_lon", "wgsLon"], in: object)
+        return coordinate(latitude: latitude, longitude: longitude)
+    }
+
+    private static func coordinate(latitude: Double?, longitude: Double?) -> CLLocationCoordinate2D? {
+        guard let latitude,
+              let longitude,
+              (-90...90).contains(latitude),
+              (-180...180).contains(longitude) else {
+            return nil
+        }
+
+        return NinebotCoordinateTransform.mapKitCoordinate(latitude: latitude, longitude: longitude)
+    }
+
+    private static func firstDouble(_ keys: [String], in object: [String: JSONValue]) -> Double? {
+        for key in keys {
+            if let value = object[key]?.doubleValue {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func firstNumber(_ keys: [String], in object: [String: Any]) -> Double? {
+        for key in keys {
+            if let value = object[key], let number = number(fromAny: value) {
+                return number
+            }
+        }
+        return nil
+    }
+
+    private static func number(fromAny value: Any) -> Double? {
+        if let number = value as? NSNumber {
+            return number.doubleValue
+        }
+        if let double = value as? Double {
+            return double
+        }
+        if let int = value as? Int {
+            return Double(int)
+        }
+        if let string = value as? String {
+            return Double(string)
+        }
+        return nil
+    }
+
+    private static func deduplicated(_ coordinates: [CLLocationCoordinate2D]) -> [CLLocationCoordinate2D] {
+        var result: [CLLocationCoordinate2D] = []
+        var lastKey: String?
+
+        for coordinate in coordinates {
+            let key = "\(Int((coordinate.latitude * 1_000_000).rounded()))|\(Int((coordinate.longitude * 1_000_000).rounded()))"
+            guard key != lastKey else { continue }
+            result.append(coordinate)
+            lastKey = key
+        }
+
+        return result
+    }
 }
 
 extension NinebotRideRecord {
@@ -226,7 +520,74 @@ struct NinebotRecordedRide: Codable, Equatable, Identifiable {
     }
 
     var distanceKilometers: Double {
-        distanceMeters / 1000
+        displayDistanceMeters / 1000
+    }
+
+    var trackCoordinates: [CLLocationCoordinate2D] {
+        points
+            .sorted { $0.date < $1.date }
+            .filter {
+                (-90...90).contains($0.latitude)
+                    && (-180...180).contains($0.longitude)
+                    && (($0.horizontalAccuracy ?? 0) <= 120)
+            }
+            .map {
+                NinebotCoordinateTransform.mapKitCoordinate(latitude: $0.latitude, longitude: $0.longitude)
+            }
+    }
+
+    func sampledTrackCoordinates(maxCount: Int = 120) -> [CLLocationCoordinate2D] {
+        let coordinates = trackCoordinates
+        guard coordinates.count > maxCount, maxCount > 1 else { return coordinates }
+        let step = Double(coordinates.count - 1) / Double(maxCount - 1)
+        return (0..<maxCount).map { index in
+            coordinates[min(Int((Double(index) * step).rounded()), coordinates.count - 1)]
+        }
+    }
+
+    var displayDistanceMeters: Double {
+        let recalculated = Self.recalculatedDistanceMeters(from: points)
+        if recalculated > 0 {
+            return recalculated
+        }
+        return distanceMeters
+    }
+
+    static func recalculatedDistanceMeters(from points: [NinebotRideTrackPoint]) -> Double {
+        guard points.count > 1 else { return 0 }
+        var total = 0.0
+        var previous: CLLocation?
+
+        for point in points.sorted(by: { $0.date < $1.date }) {
+            guard (-90...90).contains(point.latitude),
+                  (-180...180).contains(point.longitude),
+                  (point.horizontalAccuracy ?? 0) <= 120 else {
+                continue
+            }
+
+            let location = CLLocation(
+                coordinate: CLLocationCoordinate2D(latitude: point.latitude, longitude: point.longitude),
+                altitude: 0,
+                horizontalAccuracy: max(point.horizontalAccuracy ?? 20, 1),
+                verticalAccuracy: -1,
+                timestamp: point.date
+            )
+
+            if let previous {
+                let deltaTime = location.timestamp.timeIntervalSince(previous.timestamp)
+                let distance = location.distance(from: previous)
+                if deltaTime >= 0,
+                   deltaTime <= 30,
+                   distance >= 0,
+                   distance <= 300 {
+                    total += distance
+                }
+            }
+
+            previous = location
+        }
+
+        return total
     }
 }
 

@@ -1,4 +1,5 @@
 import Foundation
+import CoreLocation
 
 struct NinebotCoordinatePair: Codable, Equatable {
     var latitude: Double
@@ -24,6 +25,11 @@ enum NinebotCoordinateTransform {
             latitude: latitude + latitudeDelta,
             longitude: longitude + longitudeDelta
         )
+    }
+
+    static func mapKitCoordinate(latitude: Double, longitude: Double) -> CLLocationCoordinate2D {
+        let coordinate = gcj02Coordinate(latitude: latitude, longitude: longitude)
+        return CLLocationCoordinate2D(latitude: coordinate.latitude, longitude: coordinate.longitude)
     }
 
     static func isInsideMainlandChina(latitude: Double, longitude: Double) -> Bool {

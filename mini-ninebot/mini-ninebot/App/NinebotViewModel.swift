@@ -127,6 +127,8 @@ final class NinebotViewModel: ObservableObject {
     @Published private(set) var history: [String: [NinebotVehicleHistoryPoint]] = [:]
     @Published private(set) var resolvedAddresses: [String: NinebotResolvedAddress] = [:]
     @Published private(set) var recordedRides: [NinebotRecordedRide] = []
+    @Published private(set) var rideDetails: [String: NinebotRideDetail] = [:]
+    @Published private(set) var loadingRideDetailKeys: Set<String> = []
 
     private let store = NinebotSharedStore()
     private var lastAutomaticRefreshAt: Date?
@@ -349,6 +351,34 @@ final class NinebotViewModel: ObservableObject {
         }
     }
 
+    func rideDetail(vehicleSN: String, rideID: String) -> NinebotRideDetail? {
+        rideDetails[rideDetailKey(vehicleSN: vehicleSN, rideID: rideID)]
+    }
+
+    func isLoadingRideDetail(vehicleSN: String, rideID: String) -> Bool {
+        loadingRideDetailKeys.contains(rideDetailKey(vehicleSN: vehicleSN, rideID: rideID))
+    }
+
+    func refreshRideDetail(vehicleSN: String, rideID: String, force: Bool = false) async {
+        let key = rideDetailKey(vehicleSN: vehicleSN, rideID: rideID)
+        guard force || rideDetails[key] == nil else { return }
+        guard !loadingRideDetailKeys.contains(key) else { return }
+
+        loadingRideDetailKeys.insert(key)
+        defer {
+            loadingRideDetailKeys.remove(key)
+        }
+
+        do {
+            let client = try makeClient()
+            let detail = try await client.fetchTravelDetail(sn: vehicleSN, travelID: rideID)
+            rideDetails[key] = detail
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func saveRecordedRide(_ ride: NinebotRecordedRide) {
         store.upsertRecordedRide(ride)
         recordedRides = store.loadRecordedRides()
@@ -386,11 +416,16 @@ final class NinebotViewModel: ObservableObject {
         return NinebotProxyClient(configuration: configuration)
     }
 
+    private func rideDetailKey(vehicleSN: String, rideID: String) -> String {
+        "\(vehicleSN)|\(rideID)"
+    }
+
     @discardableResult
     private func saveDashboard(_ dashboard: NinebotDashboard) -> NinebotDashboard {
         let archivedDashboard = store.saveDashboard(dashboard)
         self.dashboard = archivedDashboard
         history = Self.historyMap(for: archivedDashboard, store: store)
+        NinebotChargingLiveActivityManager.sync(with: archivedDashboard)
         return archivedDashboard
     }
 

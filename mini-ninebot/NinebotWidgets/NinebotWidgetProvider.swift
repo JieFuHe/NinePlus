@@ -27,18 +27,36 @@ struct NinebotTimelineProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<NinebotWidgetEntry>) -> Void) {
         Task {
             let entry = await loadEntry()
-            let refreshMinutes = entry.dashboard.primaryVehicle?.state.isCharging == true ? 5 : 15
+            let refreshMinutes = refreshIntervalMinutes(for: entry.dashboard.primaryVehicle?.state)
             let nextRefresh = Calendar.current.date(byAdding: .minute, value: refreshMinutes, to: Date())
                 ?? Date().addingTimeInterval(TimeInterval(refreshMinutes * 60))
             completion(Timeline(entries: [entry], policy: .after(nextRefresh)))
         }
     }
 
+    private func refreshIntervalMinutes(for state: NinebotVehicleState?) -> Int {
+        guard let state else { return 30 }
+        if state.isCharging == true, !state.isFullyCharged { return 3 }
+        if state.isLocked == false || state.isPoweredOn == true { return 8 }
+        if let battery = state.battery, battery < 20 { return 10 }
+        return 20
+    }
+
     private func loadEntry() async -> NinebotWidgetEntry {
+        let startedAt = Date()
         let store = NinebotSharedStore()
         let cached = store.loadDashboard()
+        let configuration = store.loadConfiguration() ?? NinebotProxyConfiguration(baseURLString: "", bearerToken: "")
 
-        guard let configuration = store.loadConfiguration(), configuration.isUsable else {
+        guard configuration.isUsable else {
+            store.saveLastWidgetRefreshEvent(NinebotRefreshEvent(
+                source: "Widget",
+                operation: "刷新小组件",
+                startedAt: startedAt,
+                endedAt: Date(),
+                success: false,
+                message: "未配置代理"
+            ))
             return NinebotWidgetEntry(
                 date: Date(),
                 dashboard: cached ?? .empty,
@@ -51,6 +69,14 @@ struct NinebotTimelineProvider: TimelineProvider {
             let dashboard = try await NinebotProxyClient(configuration: configuration)
                 .fetchDashboard(selectedSN: cached?.selectedSN)
             let archivedDashboard = store.saveDashboard(dashboard)
+            store.saveLastWidgetRefreshEvent(NinebotRefreshEvent(
+                source: "Widget",
+                operation: "刷新小组件",
+                startedAt: startedAt,
+                endedAt: Date(),
+                success: true,
+                message: archivedDashboard.primaryVehicle?.vehicle.name
+            ))
             return NinebotWidgetEntry(
                 date: Date(),
                 dashboard: archivedDashboard,
@@ -60,6 +86,14 @@ struct NinebotTimelineProvider: TimelineProvider {
         } catch {
             let message = error.localizedDescription
             store.saveLastError(message)
+            store.saveLastWidgetRefreshEvent(NinebotRefreshEvent(
+                source: "Widget",
+                operation: "刷新小组件",
+                startedAt: startedAt,
+                endedAt: Date(),
+                success: false,
+                message: message
+            ))
             return NinebotWidgetEntry(
                 date: Date(),
                 dashboard: cached ?? .empty,

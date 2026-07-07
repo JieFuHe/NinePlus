@@ -2,19 +2,27 @@
 //  ContentView.swift
 //  mini-ninebot
 //
-//  Created by Jeff He on 2026/7/5.
-//
 
 import SwiftUI
+
+private enum NinebotRootTab: Hashable {
+    case dashboard
+    case trips
+    case recording
+    case settings
+}
 
 struct ContentView: View {
     @StateObject private var model = NinebotViewModel()
     @Environment(\.scenePhase) private var scenePhase
+    @State private var selectedTab: NinebotRootTab = .dashboard
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             NavigationStack {
-                NinebotDashboardView(model: model)
+                NinebotDashboardView(model: model) {
+                    selectedTab = .trips
+                }
                     .navigationTitle("")
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar(.hidden, for: .navigationBar)
@@ -23,6 +31,7 @@ struct ContentView: View {
             .tabItem {
                 Label("车控", systemImage: "dot.circle.and.cursorarrow")
             }
+            .tag(NinebotRootTab.dashboard)
 
             NavigationStack {
                 NinebotTripsTabView(model: model)
@@ -30,6 +39,7 @@ struct ContentView: View {
             .tabItem {
                 Label("行程", systemImage: "road.lanes")
             }
+            .tag(NinebotRootTab.trips)
 
             NavigationStack {
                 NinebotRecordingView(model: model)
@@ -37,6 +47,7 @@ struct ContentView: View {
             .tabItem {
                 Label("记录", systemImage: "gauge.with.dots.needle.67percent")
             }
+            .tag(NinebotRootTab.recording)
 
             NavigationStack {
                 NinebotSettingsView(model: model)
@@ -45,6 +56,7 @@ struct ContentView: View {
             .tabItem {
                 Label("我的", systemImage: "person.crop.circle")
             }
+            .tag(NinebotRootTab.settings)
         }
         .tint(Color(red: 0.13, green: 0.82, blue: 0.28))
         .task {

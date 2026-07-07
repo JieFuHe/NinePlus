@@ -3,6 +3,7 @@ import CoreLocation
 import CoreMotion
 import MapKit
 import SwiftUI
+import UIKit
 
 struct NinebotRecordingView: View {
     @ObservedObject var model: NinebotViewModel
@@ -853,6 +854,7 @@ private struct RecordedRideDetailView: View {
     var onDelete: (NinebotRecordedRide) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var isConfirmingDeletion = false
+    @State private var copiedMessage: String?
 
     var body: some View {
         ScrollView {
@@ -860,6 +862,7 @@ private struct RecordedRideDetailView: View {
                 RecordedRideDetailHero(record: record)
                 RecordedRideTrackMap(record: record)
                 RecordedRideDetailMetrics(record: record)
+                RecordedRideExportCard(record: record, copiedMessage: $copiedMessage)
 
                 if let associatedRideID = record.associatedRideID {
                     VStack(alignment: .leading, spacing: 8) {
@@ -900,6 +903,20 @@ private struct RecordedRideDetailView: View {
         .background(Color.teslaPageBackground.ignoresSafeArea())
         .navigationTitle("记录详情")
         .navigationBarTitleDisplayMode(.inline)
+        .overlay(alignment: .top) {
+            if let copiedMessage {
+                Text(copiedMessage)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Color.teslaPrimaryText)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(.regularMaterial)
+                    .clipShape(Capsule())
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: copiedMessage)
         .confirmationDialog("删除这条记录？", isPresented: $isConfirmingDeletion, titleVisibility: .visible) {
             Button("删除记录", role: .destructive) {
                 onDelete(record)
@@ -961,6 +978,7 @@ private struct RecordedRideDetailHero: View {
 private struct RecordedRideTrackMap: View {
     var record: NinebotRecordedRide
     @State private var cameraPosition: MapCameraPosition
+    @State private var playbackProgress: Double = 1
 
     init(record: NinebotRecordedRide) {
         self.record = record
@@ -986,18 +1004,6 @@ private struct RecordedRideTrackMap: View {
                             .stroke(Color.teslaGreen, lineWidth: 4)
                     }
 
-                    ForEach(Array(record.sampledTrackCoordinates().enumerated()), id: \.offset) { _, coordinate in
-                        Annotation("轨迹点", coordinate: coordinate) {
-                            Circle()
-                                .fill(Color.teslaGreen)
-                                .frame(width: 5, height: 5)
-                                .overlay {
-                                    Circle()
-                                        .stroke(Color(.systemBackground), lineWidth: 1)
-                                }
-                        }
-                    }
-
                     if let first = record.recordingCoordinates.first {
                         Marker("开始", systemImage: "play.fill", coordinate: first)
                             .tint(Color.teslaGreen)
@@ -1006,6 +1012,23 @@ private struct RecordedRideTrackMap: View {
                     if let last = record.recordingCoordinates.last {
                         Marker("结束", systemImage: "stop.fill", coordinate: last)
                             .tint(.red)
+                    }
+
+                    if let playbackCoordinate {
+                        Annotation("回放", coordinate: playbackCoordinate) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.teslaGreen.opacity(0.18))
+                                    .frame(width: 26, height: 26)
+                                Circle()
+                                    .fill(Color.teslaGreen)
+                                    .frame(width: 12, height: 12)
+                                    .overlay {
+                                        Circle()
+                                            .stroke(Color(.systemBackground), lineWidth: 2)
+                                    }
+                            }
+                        }
                     }
                 }
 
@@ -1024,6 +1047,20 @@ private struct RecordedRideTrackMap: View {
             }
             .frame(height: 300)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            if record.recordingCoordinates.count > 1 {
+                HStack(spacing: 10) {
+                    Image(systemName: "play.circle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.teslaGreen)
+                    Slider(value: $playbackProgress, in: 0...1)
+                        .tint(Color.teslaGreen)
+                    Text(playbackTimeText)
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(Color.teslaSecondaryText)
+                        .frame(width: 46, alignment: .trailing)
+                }
+            }
         }
         .padding(14)
         .background(Color.teslaCardBackground)
@@ -1032,6 +1069,18 @@ private struct RecordedRideTrackMap: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(Color.teslaHairline, lineWidth: 1)
         }
+    }
+
+    private var playbackCoordinate: CLLocationCoordinate2D? {
+        let coordinates = record.recordingCoordinates
+        guard !coordinates.isEmpty else { return nil }
+        let index = min(max(Int((Double(coordinates.count - 1) * playbackProgress).rounded()), 0), coordinates.count - 1)
+        return coordinates[index]
+    }
+
+    private var playbackTimeText: String {
+        let seconds = record.durationSeconds * playbackProgress
+        return formatRecordingDuration(seconds)
     }
 
     private static func region(for coordinates: [CLLocationCoordinate2D]) -> MKCoordinateRegion {
@@ -1080,6 +1129,80 @@ private struct RecordedRideDetailMetrics: View {
             RecordingDetailMetric(title: "轨迹点", value: "\(record.points.count) 个", systemImage: "point.3.connected.trianglepath.dotted", tint: Color.teslaGreen)
             RecordingDetailMetric(title: "关联", value: record.associatedRideID == nil ? "未关联" : "已关联", systemImage: "link", tint: record.associatedRideID == nil ? Color.teslaSecondaryText : Color.teslaGreen)
         }
+    }
+}
+
+private struct RecordedRideExportCard: View {
+    var record: NinebotRecordedRide
+    @Binding var copiedMessage: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("轨迹导出")
+                        .font(.headline)
+                        .foregroundStyle(Color.teslaPrimaryText)
+                    Text("复制 GPX 后可以导入地图或轨迹工具")
+                        .font(.caption)
+                        .foregroundStyle(Color.teslaSecondaryText)
+                }
+
+                Spacer()
+
+                Text("\(record.trackCoordinates.count) 点")
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(Color.teslaSecondaryText)
+            }
+
+            Button {
+                UIPasteboard.general.string = gpxText
+                copiedMessage = "已复制 GPX"
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 1_300_000_000)
+                    copiedMessage = nil
+                }
+            } label: {
+                Label("复制 GPX", systemImage: "doc.on.doc.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 46)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Color.teslaGreen)
+            .disabled(record.trackCoordinates.isEmpty)
+        }
+        .padding(14)
+        .background(Color.teslaCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.teslaHairline, lineWidth: 1)
+        }
+    }
+
+    private var gpxText: String {
+        let points = record.points.sorted { $0.date < $1.date }
+        let formatter = ISO8601DateFormatter()
+        let trackPoints = points.map { point in
+            let coordinate = recordingMapCoordinate(latitude: point.latitude, longitude: point.longitude)
+            return """
+            <trkpt lat="\(String(format: "%.7f", coordinate.latitude))" lon="\(String(format: "%.7f", coordinate.longitude))"><time>\(formatter.string(from: point.date))</time><speed>\(String(format: "%.2f", point.speedKmh / 3.6))</speed></trkpt>
+            """
+        }
+        .joined(separator: "\n")
+
+        return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <gpx version="1.1" creator="NineBot+" xmlns="http://www.topografix.com/GPX/1/1">
+        <trk>
+        <name>\(formatRecordingDate(record.startedAt))</name>
+        <trkseg>
+        \(trackPoints)
+        </trkseg>
+        </trk>
+        </gpx>
+        """
     }
 }
 

@@ -13,6 +13,8 @@ DerivedData/
 build/
 *.xcarchive
 *.ipa
+node_modules/
+platform/
 
 # Signing material
 *.mobileprovision

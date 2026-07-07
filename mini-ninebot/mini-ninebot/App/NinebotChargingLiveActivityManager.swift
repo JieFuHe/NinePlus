@@ -44,7 +44,7 @@ private enum NinebotChargingActivityController {
             chargingPower: snapshot.state.chargingPower,
             batteryTemperature: snapshot.state.batteryTemperature,
             batteryVoltage: snapshot.state.batteryVoltage,
-            chargingSpeed: chargingSpeedKmPerHour(for: snapshot.state),
+            chargingSpeed: snapshot.state.estimatedChargingSpeedKmh,
             updatedAt: snapshot.state.updatedAt
         )
         let content = ActivityContent(
@@ -87,28 +87,5 @@ private enum NinebotChargingActivityController {
         return Date().addingTimeInterval(minutes * 60)
     }
 
-    private static func chargingSpeedKmPerHour(for state: NinebotVehicleState) -> Double? {
-        guard let battery = state.battery,
-              battery < 100,
-              let minutes = state.estimatedFullChargeMinutes,
-              minutes > 0 else {
-            return nil
-        }
-
-        let kmPerPercent: Double?
-        if let observed = state.observedKmPerBatteryPercent, observed > 0 {
-            kmPerPercent = observed
-        } else if let rangePerPercent = state.rangePerBatteryPercent, rangePerPercent > 0 {
-            kmPerPercent = rangePerPercent
-        } else if let localRange = state.localEstimatedMileage, battery > 0 {
-            kmPerPercent = localRange / Double(battery)
-        } else {
-            kmPerPercent = nil
-        }
-
-        guard let kmPerPercent, kmPerPercent > 0 else { return nil }
-        let remainingRange = kmPerPercent * Double(100 - battery)
-        return remainingRange / (minutes / 60)
-    }
 }
 #endif

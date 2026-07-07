@@ -5,6 +5,48 @@ enum NinebotAppGroup {
     static let identifier = "group.com.example.NineBotPlus"
 }
 
+enum NinebotDataSourceMode: String, Codable, CaseIterable, Identifiable {
+    case proxy
+    case platform
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .proxy: return "ninecli 代理"
+        case .platform: return "NinePlus 服务器"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .proxy: return "代理"
+        case .platform: return "服务器"
+        }
+    }
+
+    var endpointPlaceholder: String {
+        switch self {
+        case .proxy: return "http://127.0.0.1:18009"
+        case .platform: return "http://服务器IP:19009"
+        }
+    }
+
+    var tokenPlaceholder: String {
+        switch self {
+        case .proxy: return "ninecli Bearer Token"
+        case .platform: return "NinePlus App Bearer Token"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .proxy: return "server.rack"
+        case .platform: return "cloud.fill"
+        }
+    }
+}
+
 struct NinebotProxyConfiguration: Codable, Equatable {
     var baseURLString: String
     var bearerToken: String
@@ -36,6 +78,19 @@ struct NinebotLoginResult: Codable, Equatable {
     var businessUID: String?
 }
 
+struct NinebotRefreshEvent: Codable, Equatable {
+    var source: String
+    var operation: String
+    var startedAt: Date
+    var endedAt: Date
+    var success: Bool
+    var message: String?
+
+    var durationSeconds: Double {
+        max(endedAt.timeIntervalSince(startedAt), 0)
+    }
+}
+
 struct NinebotVehicleInfo: Codable, Equatable, Identifiable {
     var sn: String
     var name: String
@@ -56,6 +111,10 @@ struct NinebotVehicleInfo: Codable, Equatable, Identifiable {
         return "SN \(sn)"
     }
 
+    var authDate: Date? {
+        firstRawDate(["auth_date", "authDate", "bind_time", "bindTime", "created_at", "createdAt"])
+    }
+
     private func firstRawString(_ keys: [String]) -> String? {
         guard let raw else { return nil }
         for key in keys {
@@ -64,6 +123,39 @@ struct NinebotVehicleInfo: Codable, Equatable, Identifiable {
             }
         }
         return nil
+    }
+
+    private func firstRawDate(_ keys: [String]) -> Date? {
+        guard let raw else { return nil }
+        for key in keys {
+            guard let value = raw[key] else { continue }
+            if let date = Self.rawDateValue(value) {
+                return date
+            }
+        }
+        return nil
+    }
+
+    private static func rawDateValue(_ value: JSONValue) -> Date? {
+        if let number = value.doubleValue {
+            return epochDateValue(number)
+        }
+
+        guard let string = value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !string.isEmpty else {
+            return nil
+        }
+        if let number = Double(string) {
+            return epochDateValue(number)
+        }
+        return nil
+    }
+
+    private static func epochDateValue(_ number: Double) -> Date? {
+        guard number > 0 else { return nil }
+        let seconds = number > 1_000_000_000_000 ? number / 1000 : number
+        let date = Date(timeIntervalSince1970: seconds)
+        return date.timeIntervalSince1970 > 0 ? date : nil
     }
 }
 
@@ -110,9 +202,49 @@ struct NinebotRideDetail: Codable, Equatable, Identifiable {
     }
 }
 
+struct NinebotInterfaceTrackPoint: Equatable, Identifiable {
+    var id: String
+    var latitude: Double
+    var longitude: Double
+    var speedKmh: Double?
+    var auxiliaryValue: Double?
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+}
+
 extension NinebotRideDetail {
+    var interfaceTrackPoints: [NinebotInterfaceTrackPoint] {
+        let points = Self.bestTrackPoints(from: raw)
+        if !points.isEmpty {
+            return points
+        }
+        return interfaceTrackCoordinates.enumerated().map { index, coordinate in
+            Self.interfaceTrackPoint(
+                coordinate: coordinate,
+                speedKmh: nil,
+                auxiliaryValue: nil,
+                index: index
+            )
+        }
+    }
+
     var interfaceTrackCoordinates: [CLLocationCoordinate2D] {
-        Self.bestTrackCoordinates(from: raw)
+        let points = Self.bestTrackPoints(from: raw)
+        if !points.isEmpty {
+            return points.map(\.coordinate)
+        }
+        return Self.bestTrackCoordinates(from: raw)
+    }
+
+    private static func bestTrackPoints(from value: JSONValue) -> [NinebotInterfaceTrackPoint] {
+        let candidateValues = trackCandidateValues(from: value)
+        let parsedCandidates = candidateValues
+            .map { trackPoints(from: $0) }
+            .filter { $0.count > 1 }
+
+        return parsedCandidates.max { $0.count < $1.count } ?? []
     }
 
     private static func bestTrackCoordinates(from value: JSONValue) -> [CLLocationCoordinate2D] {
@@ -167,6 +299,133 @@ extension NinebotRideDetail {
 
         collect(value)
         return values
+    }
+
+    private static func trackPoints(from value: JSONValue) -> [NinebotInterfaceTrackPoint] {
+        if let array = value.arrayValue {
+            return trackPoints(fromArray: array)
+        }
+
+        if let object = value.objectValue {
+            if let point = trackPoint(fromObject: object, index: 0) {
+                return [point]
+            }
+
+            let nestedCandidates = ["trial", "trail", "trace", "track", "tracks", "points", "list", "data", "gps", "locations", "coordinates"]
+            for key in nestedCandidates {
+                if let child = object[key] {
+                    let points = trackPoints(from: child)
+                    if points.count > 1 {
+                        return points
+                    }
+                }
+            }
+        }
+
+        if let string = value.stringValue {
+            return trackPoints(fromString: string)
+        }
+
+        return []
+    }
+
+    private static func trackPoints(fromArray array: [JSONValue]) -> [NinebotInterfaceTrackPoint] {
+        if let point = trackPoint(fromPair: array, index: 0) {
+            return [point]
+        }
+
+        var result: [NinebotInterfaceTrackPoint] = []
+        for (index, value) in array.enumerated() {
+            if let object = value.objectValue, let point = trackPoint(fromObject: object, index: index) {
+                result.append(point)
+                continue
+            }
+
+            if let pair = value.arrayValue, let point = trackPoint(fromPair: pair, index: index) {
+                result.append(point)
+                continue
+            }
+
+            if let string = value.stringValue {
+                result.append(contentsOf: trackPoints(fromString: string, startIndex: result.count))
+            }
+        }
+
+        return deduplicated(result)
+    }
+
+    private static func trackPoint(fromObject object: [String: JSONValue], index: Int) -> NinebotInterfaceTrackPoint? {
+        guard let coordinate = coordinate(fromObject: object) else { return nil }
+        return interfaceTrackPoint(
+            coordinate: coordinate,
+            speedKmh: normalizedSpeed(firstDouble(["speed", "spd", "speed_kmh", "speedKmh", "velocity", "v"], in: object)),
+            auxiliaryValue: firstDouble(["direction", "bearing", "heading", "course", "angle", "aux", "auxiliary"], in: object),
+            index: index
+        )
+    }
+
+    private static func trackPoint(fromPair pair: [JSONValue], index: Int) -> NinebotInterfaceTrackPoint? {
+        let numbers = pair.compactMap(\.doubleValue)
+        return trackPoint(fromNumbers: numbers, index: index)
+    }
+
+    private static func trackPoints(fromString string: String, startIndex: Int = 0) -> [NinebotInterfaceTrackPoint] {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        if let jsonPoints = trackPointsFromJSONString(trimmed), jsonPoints.count > 1 {
+            return jsonPoints
+        }
+
+        let separators = CharacterSet(charactersIn: ";|\n")
+        let segments = trimmed.components(separatedBy: separators)
+        let points = segments.enumerated().compactMap { offset, segment -> NinebotInterfaceTrackPoint? in
+            let numbers = segment
+                .split { character in
+                    character == "," || character == " " || character == "\t"
+                }
+                .compactMap { Double($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            return trackPoint(fromNumbers: numbers, index: startIndex + offset)
+        }
+
+        return points.count > 1 ? deduplicated(points) : []
+    }
+
+    private static func trackPointsFromJSONString(_ string: String) -> [NinebotInterfaceTrackPoint]? {
+        guard string.first == "{" || string.first == "[" else { return nil }
+        guard let data = string.data(using: .utf8),
+              let value = try? JSONDecoder().decode(JSONValue.self, from: data) else {
+            return nil
+        }
+        return trackPoints(from: value)
+    }
+
+    private static func trackPoint(fromNumbers numbers: [Double], index: Int) -> NinebotInterfaceTrackPoint? {
+        guard numbers.count >= 2,
+              let coordinate = coordinate(fromPair: [.number(numbers[0]), .number(numbers[1])]) else {
+            return nil
+        }
+        return interfaceTrackPoint(
+            coordinate: coordinate,
+            speedKmh: normalizedSpeed(numbers.count >= 3 ? numbers[2] : nil),
+            auxiliaryValue: numbers.count >= 4 ? numbers[3] : nil,
+            index: index
+        )
+    }
+
+    private static func interfaceTrackPoint(
+        coordinate: CLLocationCoordinate2D,
+        speedKmh: Double?,
+        auxiliaryValue: Double?,
+        index: Int
+    ) -> NinebotInterfaceTrackPoint {
+        NinebotInterfaceTrackPoint(
+            id: "\(index)-\(Int((coordinate.latitude * 1_000_000).rounded()))-\(Int((coordinate.longitude * 1_000_000).rounded()))",
+            latitude: coordinate.latitude,
+            longitude: coordinate.longitude,
+            speedKmh: speedKmh,
+            auxiliaryValue: auxiliaryValue
+        )
     }
 
     private static func trackCoordinates(from value: JSONValue) -> [CLLocationCoordinate2D] {
@@ -370,6 +629,25 @@ extension NinebotRideDetail {
             return Double(string)
         }
         return nil
+    }
+
+    private static func normalizedSpeed(_ value: Double?) -> Double? {
+        guard let value, value >= 0, value <= 160 else { return nil }
+        return value
+    }
+
+    private static func deduplicated(_ points: [NinebotInterfaceTrackPoint]) -> [NinebotInterfaceTrackPoint] {
+        var result: [NinebotInterfaceTrackPoint] = []
+        var lastKey: String?
+
+        for point in points {
+            let key = "\(Int((point.latitude * 1_000_000).rounded()))|\(Int((point.longitude * 1_000_000).rounded()))"
+            guard key != lastKey else { continue }
+            result.append(point)
+            lastKey = key
+        }
+
+        return result
     }
 
     private static func deduplicated(_ coordinates: [CLLocationCoordinate2D]) -> [CLLocationCoordinate2D] {
@@ -760,6 +1038,36 @@ struct NinebotVehicleState: Codable, Equatable {
         return isCharging == true && estimatedFullChargeMinutes == 0
     }
 
+    var estimatedChargingSpeedKmh: Double? {
+        guard isCharging == true,
+              let battery,
+              battery < 100,
+              let minutes = estimatedFullChargeMinutes,
+              minutes > 0 else {
+            return nil
+        }
+
+        let kmPerPercent: Double?
+        if let observedKmPerBatteryPercent, observedKmPerBatteryPercent > 0 {
+            kmPerPercent = observedKmPerBatteryPercent
+        } else if let rangePerBatteryPercent, rangePerBatteryPercent > 0 {
+            kmPerPercent = rangePerBatteryPercent
+        } else if let localEstimatedMileage, battery > 0 {
+            kmPerPercent = localEstimatedMileage / Double(battery)
+        } else {
+            kmPerPercent = nil
+        }
+
+        guard let kmPerPercent, kmPerPercent > 0 else { return nil }
+        let remainingRange = kmPerPercent * Double(100 - battery)
+        return remainingRange / (minutes / 60)
+    }
+
+    var estimatedChargingSpeedText: String {
+        guard let estimatedChargingSpeedKmh else { return "-- km/h" }
+        return "\(Self.numberText(estimatedChargingSpeedKmh, maximumFractionDigits: 0)) km/h"
+    }
+
     var locationText: String {
         guard let locationDescription, !locationDescription.isEmpty else { return "未知位置" }
         return locationDescription
@@ -777,10 +1085,10 @@ struct NinebotVehicleState: Codable, Equatable {
 
     var observedKmPerBatteryPercent: Double? {
         let samples = observedRangeSamples
-        let totalMileage = samples.reduce(0) { $0 + $1.mileage }
-        let totalUsedBattery = samples.reduce(0) { $0 + $1.usedBattery }
-        guard totalMileage > 0, totalUsedBattery > 0 else { return nil }
-        return totalMileage / totalUsedBattery
+        let totalWeight = samples.reduce(0) { $0 + $1.weightedBattery }
+        guard totalWeight > 0 else { return nil }
+        let weightedMileage = samples.reduce(0) { $0 + $1.weightedMileage }
+        return weightedMileage / totalWeight
     }
 
     var observedRangeSampleCount: Int {
@@ -814,7 +1122,23 @@ struct NinebotVehicleState: Codable, Equatable {
 
     var rangeEstimateAccuracyDetailText: String {
         guard observedRangeSampleCount > 0 else { return "等待有效行程样本" }
-        return "基于 \(observedRangeSampleCount) 次有效行程"
+        return "本地模型 · \(observedRangeSampleCount) 次有效行程"
+    }
+
+    var rangeModelSummaryText: String {
+        guard let observedKmPerBatteryPercent else { return "等待行程样本" }
+        return "\(Self.numberText(observedKmPerBatteryPercent, maximumFractionDigits: 2)) km/% · \(rangeEstimateAccuracyText)"
+    }
+
+    var rangeModelInsightText: String {
+        guard observedRangeSampleCount > 0 else { return "刷新更多行程后生成本地估算。" }
+        if let rangeEstimateAccuracy, rangeEstimateAccuracy >= 0.82 {
+            return "近期样本稳定，估算可信。"
+        }
+        if observedRangeSampleCount < 5 {
+            return "样本偏少，后续行程会继续校准。"
+        }
+        return "样本波动较大，已降低本地模型权重。"
     }
 
     var localEstimatedMileage: Double? {
@@ -835,10 +1159,10 @@ struct NinebotVehicleState: Codable, Equatable {
 
     var localEstimateBasisText: String {
         if let observedKmPerBatteryPercent, interfaceEstimatedMileage != nil {
-            return "结合接口续航和 \(observedRangeSampleCount) 次行程，约 \(Self.numberText(observedKmPerBatteryPercent, maximumFractionDigits: 2)) km/%。"
+            return "结合接口续航和 \(observedRangeSampleCount) 次近期行程，约 \(Self.numberText(observedKmPerBatteryPercent, maximumFractionDigits: 2)) km/%。"
         }
         if let observedKmPerBatteryPercent {
-            return "按 \(observedRangeSampleCount) 次行程估算，约 \(Self.numberText(observedKmPerBatteryPercent, maximumFractionDigits: 2)) km/%。"
+            return "按 \(observedRangeSampleCount) 次近期行程估算，约 \(Self.numberText(observedKmPerBatteryPercent, maximumFractionDigits: 2)) km/%。"
         }
         if rangePerBatteryPercent != nil {
             return "按接口续航估算。"
@@ -1031,6 +1355,31 @@ struct NinebotVehicleState: Codable, Equatable {
     private static let electricityPricePerKWh = 0.6
     private static let minimumObservedKmPerPercent = 0.2
     private static let maximumObservedKmPerPercent = 3.0
+    private static let rangeRecencyHalfLifeDays = 14.0
+
+    private struct ObservedRangeSample {
+        var mileage: Double
+        var usedBattery: Double
+        var date: Date?
+
+        var ratio: Double {
+            mileage / usedBattery
+        }
+
+        var recencyWeight: Double {
+            guard let date else { return 0.55 }
+            let days = max(Date().timeIntervalSince(date) / 86_400, 0)
+            return max(pow(0.5, days / NinebotVehicleState.rangeRecencyHalfLifeDays), 0.25)
+        }
+
+        var weightedMileage: Double {
+            mileage * recencyWeight
+        }
+
+        var weightedBattery: Double {
+            usedBattery * recencyWeight
+        }
+    }
 
     private static func deduplicatedRideRecords(_ records: [NinebotRideRecord]) -> [NinebotRideRecord] {
         var seenKeys = Set<String>()
@@ -1066,10 +1415,16 @@ struct NinebotVehicleState: Codable, Equatable {
         return max(observedKmPerBatteryPercent * normalizedBatteryPercent, 0)
     }
 
-    private var observedRangeSamples: [(mileage: Double, usedBattery: Double)] {
+    private var observedRangeSamples: [ObservedRangeSample] {
         rides.compactMap { ride in
-            guard let mileage = ride.mileage, mileage > 0.1,
-                  let usedBattery = ride.usedElectricity, usedBattery > 0, usedBattery <= 100 else {
+            guard let mileage = ride.mileage, mileage >= 0.3,
+                  let usedBattery = ride.usedElectricity, usedBattery > 0, usedBattery <= 60 else {
+                return nil
+            }
+            if let durationMinutes = ride.durationMinutes, durationMinutes > 0, durationMinutes < 1 {
+                return nil
+            }
+            if let speed = ride.speed, speed > 90 {
                 return nil
             }
 
@@ -1079,12 +1434,16 @@ struct NinebotVehicleState: Codable, Equatable {
                 return nil
             }
 
-            return (mileage, usedBattery)
+            return ObservedRangeSample(
+                mileage: mileage,
+                usedBattery: usedBattery,
+                date: ride.endedAt ?? ride.startedAt
+            )
         }
     }
 
     private var observedRangeRatios: [Double] {
-        observedRangeSamples.map { $0.mileage / $0.usedBattery }
+        observedRangeSamples.map(\.ratio)
     }
 
     private var observedRangeConsistencyScore: Double? {

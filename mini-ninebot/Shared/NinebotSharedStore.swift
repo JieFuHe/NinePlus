@@ -3,14 +3,18 @@ import Foundation
 struct NinebotSharedStore {
     private enum Key {
         static let configuration = "ninebot.proxy.configuration"
+        static let dataSourceMode = "ninebot.data.source.mode"
         static let resolvedAddresses = "ninebot.resolved.addresses"
         static let loginResult = "ninebot.login.result"
         static let dashboard = "ninebot.dashboard.snapshot"
         static let lastError = "ninebot.last.error"
+        static let lastAppRefreshEvent = "ninebot.last.app.refresh.event"
+        static let lastWidgetRefreshEvent = "ninebot.last.widget.refresh.event"
         static let historyPrefix = "ninebot.vehicle.history."
         static let interfaceRidePrefix = "ninebot.vehicle.interface.rides."
         static let vehicleImagePrefix = "ninebot.vehicle.image."
         static let recordedRides = "ninebot.recorded.rides"
+        static let pushDeviceToken = "ninebot.push.device.token"
     }
 
     private let defaults: UserDefaults
@@ -35,6 +39,27 @@ struct NinebotSharedStore {
 
     func clearConfiguration() {
         defaults.removeObject(forKey: Key.configuration)
+    }
+
+    func loadDataSourceMode() -> NinebotDataSourceMode {
+        guard let rawValue = defaults.string(forKey: Key.dataSourceMode),
+              let mode = NinebotDataSourceMode(rawValue: rawValue) else {
+            return .platform
+        }
+        return mode
+    }
+
+    func saveDataSourceMode(_ mode: NinebotDataSourceMode) {
+        defaults.set(mode.rawValue, forKey: Key.dataSourceMode)
+    }
+
+    func loadPushDeviceToken() -> String? {
+        let token = defaults.string(forKey: Key.pushDeviceToken)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return token.isEmpty ? nil : token
+    }
+
+    func savePushDeviceToken(_ token: String) {
+        defaults.set(token, forKey: Key.pushDeviceToken)
     }
 
     func loadResolvedAddresses() -> [String: NinebotResolvedAddress] {
@@ -124,6 +149,38 @@ struct NinebotSharedStore {
         defaults.string(forKey: Key.lastError)
     }
 
+    func loadLastAppRefreshEvent() -> NinebotRefreshEvent? {
+        loadRefreshEvent(key: Key.lastAppRefreshEvent)
+    }
+
+    func saveLastAppRefreshEvent(_ event: NinebotRefreshEvent) {
+        saveRefreshEvent(event, key: Key.lastAppRefreshEvent)
+    }
+
+    func loadLastWidgetRefreshEvent() -> NinebotRefreshEvent? {
+        loadRefreshEvent(key: Key.lastWidgetRefreshEvent)
+    }
+
+    func saveLastWidgetRefreshEvent(_ event: NinebotRefreshEvent) {
+        saveRefreshEvent(event, key: Key.lastWidgetRefreshEvent)
+    }
+
+    func historyCount(sn: String) -> Int {
+        loadHistory(sn: sn).count
+    }
+
+    func interfaceRideCount(sn: String) -> Int {
+        loadInterfaceRideRecords(sn: sn).count
+    }
+
+    func recordedRideCount() -> Int {
+        loadRecordedRides().count
+    }
+
+    func storedDashboardByteCount() -> Int {
+        defaults.data(forKey: Key.dashboard)?.count ?? 0
+    }
+
     func loadVehicleImageData(sn: String) -> Data? {
         if let url = vehicleImageCacheURL(sn: sn),
            let data = try? Data(contentsOf: url),
@@ -148,6 +205,16 @@ struct NinebotSharedStore {
         }
 
         defaults.set(data, forKey: vehicleImageFallbackKey(sn: sn))
+    }
+
+    private func loadRefreshEvent(key: String) -> NinebotRefreshEvent? {
+        guard let data = defaults.data(forKey: key) else { return nil }
+        return try? decoder.decode(NinebotRefreshEvent.self, from: data)
+    }
+
+    private func saveRefreshEvent(_ event: NinebotRefreshEvent, key: String) {
+        guard let data = try? encoder.encode(event) else { return }
+        defaults.set(data, forKey: key)
     }
 
     private func saveHistorySnapshots(for dashboard: NinebotDashboard) {

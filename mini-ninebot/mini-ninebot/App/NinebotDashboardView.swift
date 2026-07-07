@@ -6,6 +6,7 @@ import Combine
 
 struct NinebotDashboardView: View {
     @ObservedObject var model: NinebotViewModel
+    var onOpenTrips: () -> Void = {}
     @State private var isShowingVehiclePicker = false
     @State private var scrollOffset: CGFloat = 0
     @State private var pullDistance: CGFloat = 0
@@ -50,12 +51,21 @@ struct NinebotDashboardView: View {
                                 snapshot: primary,
                                 resolvedAddress: model.resolvedAddressText(for: primary),
                                 isLoading: model.isLoading,
+                                onOpenTrips: onOpenTrips,
                                 onRingBell: {
                                     performVehicleAction(.bell, sn: primary.vehicle.sn)
                                 }
                             )
                                 .padding(.horizontal, 16)
-                            VehicleHealthPanel(snapshot: primary)
+                            NavigationLink {
+                                NinebotBatteryDetailView(
+                                    snapshot: primary,
+                                    points: model.history(for: primary.vehicle.sn)
+                                )
+                            } label: {
+                                VehicleHealthPanel(snapshot: primary)
+                            }
+                            .buttonStyle(.plain)
                                 .padding(.horizontal, 16)
 
                             NavigationLink {
@@ -65,21 +75,6 @@ struct NinebotDashboardView: View {
                             }
                             .buttonStyle(.plain)
                             .padding(.horizontal, 16)
-
-                            NavigationLink {
-                                NinebotTripsView(
-                                    model: model,
-                                    snapshot: primary,
-                                    recordedRides: model.recordedRides(for: primary.vehicle.sn)
-                                )
-                            } label: {
-                                VehicleUsagePanel(snapshot: primary, showsDisclosure: true)
-                            }
-                            .buttonStyle(.plain)
-                                .padding(.horizontal, 16)
-
-                            VehicleHistoryPanel(points: model.history(for: primary.vehicle.sn))
-                                .padding(.horizontal, 16)
                         } else {
                             EmptyDashboardView(hasConfiguration: model.hasConfiguration)
                                 .padding(.horizontal, 16)
@@ -323,6 +318,10 @@ private struct NinebotVehicleDetailView: View {
                                 Task { await model.perform(.bell, sn: snapshot.vehicle.sn) }
                             }
                         )
+                        VehicleChargingAnalysisPanel(
+                            snapshot: snapshot,
+                            points: model.history(for: snapshot.vehicle.sn)
+                        )
                         RawPayloadCopyPanel(snapshot: snapshot, copiedMessage: $copiedMessage)
                     }
                     .padding(16)
@@ -366,6 +365,231 @@ private struct NinebotVehicleDetailView: View {
 
     private var resolvedAddress: String? {
         snapshot.flatMap { model.resolvedAddressText(for: $0) }
+    }
+}
+
+private struct NinebotBatteryDetailView: View {
+    var snapshot: NinebotVehicleSnapshot
+    var points: [NinebotVehicleHistoryPoint]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                BatteryDetailHeroCard(snapshot: snapshot)
+                BatteryDetailMetricsCard(snapshot: snapshot)
+
+                if snapshot.state.isCharging == true || snapshot.state.isFullyCharged {
+                    BatteryChargingDetailCard(snapshot: snapshot)
+                }
+
+                VehicleChargingAnalysisPanel(snapshot: snapshot, points: points)
+            }
+            .padding(16)
+            .padding(.bottom, 12)
+        }
+        .background(Color.teslaPageBackground.ignoresSafeArea())
+        .navigationTitle("电池")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct BatteryDetailHeroCard: View {
+    var snapshot: NinebotVehicleSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(snapshot.state.isFullyCharged ? "已充满" : snapshot.state.chargingStateText)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(snapshot.state.isCharging == true || snapshot.state.isFullyCharged ? Color.teslaGreen : Color.teslaSecondaryText)
+                    HStack(alignment: .lastTextBaseline, spacing: 6) {
+                        Text(snapshot.state.batteryText)
+                            .font(.system(size: 52, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(batteryTextColor(snapshot.state))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.72)
+                        Text("当前电量")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Color.teslaSecondaryText)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                BatteryGauge(value: snapshot.state.battery)
+                    .frame(width: 72, height: 72)
+            }
+
+            BatteryProgressBar(value: snapshot.state.batteryFraction)
+
+            HStack(spacing: 10) {
+                BatteryDetailMiniMetric(title: "电压", value: snapshot.state.batteryVoltageText, systemImage: "bolt.batteryblock.fill")
+                BatteryDetailMiniMetric(title: "温度", value: snapshot.state.batteryTemperatureText, systemImage: "thermometer.medium")
+            }
+        }
+        .padding(18)
+        .background(Color.teslaCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.teslaHairline, lineWidth: 1)
+        }
+    }
+}
+
+private struct BatteryDetailMetricsCard: View {
+    var snapshot: NinebotVehicleSnapshot
+
+    var body: some View {
+        LazyVGrid(
+            columns: [
+                GridItem(.flexible(), spacing: 10),
+                GridItem(.flexible(), spacing: 10)
+            ],
+            spacing: 10
+        ) {
+            BasicInfoTile(title: "电压", value: snapshot.state.batteryVoltageText, systemImage: "bolt.batteryblock.fill")
+            BasicInfoTile(title: "温度", value: snapshot.state.batteryTemperatureText, systemImage: "thermometer.medium")
+            BasicInfoTile(title: "循环次数", value: snapshot.state.batteryCycleCountText, systemImage: "arrow.trianglehead.2.clockwise")
+            BasicInfoTile(title: "更新时间", value: formatTime(snapshot.state.updatedAt), systemImage: "clock.fill")
+        }
+        .padding(16)
+        .background(Color.teslaCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.teslaHairline, lineWidth: 1)
+        }
+    }
+}
+
+private struct BatteryChargingDetailCard: View {
+    var snapshot: NinebotVehicleSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label(snapshot.state.isFullyCharged ? "充电完成" : "正在充电", systemImage: snapshot.state.isFullyCharged ? "checkmark.circle.fill" : "bolt.fill")
+                    .font(.headline)
+                    .foregroundStyle(Color.teslaGreen)
+
+                Spacer()
+
+                Text(snapshot.state.estimatedFullChargeTimeText)
+                    .font(.subheadline.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(Color.teslaPrimaryText)
+            }
+
+            DetailSection(title: "充电信息") {
+                DetailRow(title: "充电功率", value: snapshot.state.chargingPowerText, systemImage: "bolt.fill")
+                DetailRow(title: "充电速度", value: snapshot.state.estimatedChargingSpeedText, systemImage: "bolt.car.fill")
+                DetailRow(title: "预计充满", value: snapshot.state.estimatedFullChargeTimeText, systemImage: "timer")
+                DetailRow(title: "满电时间", value: snapshot.state.estimatedFullChargeClockText, systemImage: "clock.badge.checkmark.fill")
+                DetailRow(title: "充至 80%", value: snapshot.state.estimatedChargeTo80TimeText, systemImage: "battery.75")
+                DetailRow(title: "接口剩余", value: snapshot.state.remainingChargeTimeText, systemImage: "clock.badge.questionmark")
+            }
+        }
+        .padding(16)
+        .background(Color.teslaCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.teslaHairline, lineWidth: 1)
+        }
+    }
+}
+
+private struct BatteryDetailMiniMetric: View {
+    var title: String
+    var value: String
+    var systemImage: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.teslaGreen)
+                .frame(width: 22)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(value)
+                    .font(.subheadline.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(Color.teslaPrimaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                Text(title)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Color.teslaSecondaryText)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.teslaControlBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
+private struct VehicleChargingAnalysisPanel: View {
+    var snapshot: NinebotVehicleSnapshot
+    var points: [NinebotVehicleHistoryPoint]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("充电分析")
+                        .font(.headline)
+                        .foregroundStyle(Color.teslaPrimaryText)
+                    Text(snapshot.state.isCharging == true ? "当前正在充电" : "按本地快照统计")
+                        .font(.caption)
+                        .foregroundStyle(Color.teslaSecondaryText)
+                }
+
+                Spacer()
+
+                Text(snapshot.state.chargingStateText)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(snapshot.state.isCharging == true ? Color.teslaGreen : Color.teslaSecondaryText)
+            }
+
+            LazyVGrid(
+                columns: [
+                    GridItem(.flexible(), spacing: 10),
+                    GridItem(.flexible(), spacing: 10)
+                ],
+                spacing: 10
+            ) {
+                BasicInfoTile(title: "功率", value: snapshot.state.chargingPowerText, systemImage: "bolt.fill")
+                BasicInfoTile(title: "温度", value: snapshot.state.batteryTemperatureText, systemImage: "thermometer.medium")
+                BasicInfoTile(title: "电压", value: snapshot.state.batteryVoltageText, systemImage: "bolt.batteryblock.fill")
+                BasicInfoTile(title: "充电速度", value: snapshot.state.estimatedChargingSpeedText, systemImage: "bolt.car.fill")
+                BasicInfoTile(title: "充电快照", value: "\(chargingPoints.count) 个", systemImage: "clock.arrow.circlepath")
+                BasicInfoTile(title: "电量变化", value: chargingDeltaText, systemImage: "battery.100")
+            }
+        }
+        .padding(16)
+        .background(Color.teslaCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.teslaHairline, lineWidth: 1)
+        }
+    }
+
+    private var chargingPoints: [NinebotVehicleHistoryPoint] {
+        points.filter { $0.isCharging == true }.sorted { $0.date < $1.date }
+    }
+
+    private var chargingDeltaText: String {
+        guard let first = chargingPoints.first?.battery,
+              let last = chargingPoints.last?.battery else {
+            return "--%"
+        }
+        let delta = last - first
+        return "\(delta >= 0 ? "+" : "")\(delta)%"
     }
 }
 
@@ -1100,7 +1324,7 @@ private struct ChargingStatusView: View {
         }
         .padding(12)
         .background(Color.teslaControlBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(alignment: .bottomLeading) {
             GeometryReader { proxy in
                 Rectangle()
@@ -1172,7 +1396,7 @@ private struct ChargingMetricChip: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
         .background(Color.teslaCardBackground.opacity(0.72))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
@@ -1197,7 +1421,7 @@ private struct ControlMetricPill: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
         .background(Color.teslaControlBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
 
@@ -1205,6 +1429,7 @@ private struct VehicleLocationRideSummaryPanel: View {
     var snapshot: NinebotVehicleSnapshot
     var resolvedAddress: String?
     var isLoading: Bool
+    var onOpenTrips: () -> Void
     var onRingBell: () -> Void
 
     var body: some View {
@@ -1217,25 +1442,10 @@ private struct VehicleLocationRideSummaryPanel: View {
             )
             .frame(maxWidth: .infinity)
 
-            VStack(spacing: 10) {
-                VehicleRideMetricCard(
-                    title: "最近骑行",
-                    value: formatDistanceNumber(snapshot.state.lastMileage),
-                    unit: "km",
-                    systemImage: "arrow.left.arrow.right",
-                    isProminent: true
-                )
-                .frame(maxWidth: .infinity)
-
-                VehicleRideMetricCard(
-                    title: "当月行程",
-                    value: formatDistanceNumber(snapshot.state.monthMileage),
-                    unit: "km",
-                    systemImage: "calendar",
-                    isProminent: false
-                )
-                .frame(maxWidth: .infinity)
+            Button(action: onOpenTrips) {
+                VehicleRideSummaryGroupCard(snapshot: snapshot)
             }
+            .buttonStyle(.plain)
             .frame(maxWidth: .infinity)
         }
         .frame(height: 184)
@@ -1307,13 +1517,13 @@ private struct VehicleLocationSummaryCard: View {
             )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .stroke(Color.teslaHairline, lineWidth: 1)
         }
-        .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .shadow(color: Color.black.opacity(0.02), radius: 10, x: 0, y: 4)
+        .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
     private var normalizedLocationText: String? {
@@ -1363,6 +1573,90 @@ private struct VehicleLocationPreviewMap: View {
     }
 }
 
+private struct VehicleRideSummaryGroupCard: View {
+    var snapshot: NinebotVehicleSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Label("行程", systemImage: "road.lanes")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.teslaPrimaryText)
+                    .lineLimit(1)
+
+                Spacer(minLength: 6)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(Color.teslaSecondaryText)
+            }
+
+            VehicleRideSummaryTile(
+                title: "最近骑行",
+                value: formatDistanceNumber(snapshot.state.lastMileage),
+                unit: "km",
+                systemImage: "arrow.left.arrow.right",
+                isPrimary: true
+            )
+
+            VehicleRideSummaryTile(
+                title: "总行程",
+                value: formatDistanceNumber(snapshot.state.totalMileage),
+                unit: "km",
+                systemImage: "calendar",
+                isPrimary: false
+            )
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.teslaCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.teslaHairline, lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.02), radius: 10, x: 0, y: 4)
+    }
+}
+
+private struct VehicleRideSummaryTile: View {
+    var title: String
+    var value: String
+    var unit: String
+    var systemImage: String
+    var isPrimary: Bool
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                Label(title, systemImage: systemImage)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Color.teslaSecondaryText)
+                    .lineLimit(1)
+
+                HStack(alignment: .lastTextBaseline, spacing: 3) {
+                    Text(value)
+                        .font(.system(size: isPrimary ? 28 : 21, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(Color.teslaPrimaryText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.55)
+                    Text(unit)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.teslaPrimaryText)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, isPrimary ? 9 : 8)
+        .frame(maxWidth: .infinity, minHeight: isPrimary ? 67 : 50, alignment: .leading)
+        .background(isPrimary ? Color.teslaGreen.opacity(0.10) : Color.teslaControlBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
 private struct VehicleRideMetricCard: View {
     var title: String
     var value: String
@@ -1382,12 +1676,12 @@ private struct VehicleRideMetricCard: View {
         .frame(height: isProminent ? 110 : 64)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .stroke(Color.teslaHairline, lineWidth: 1)
         }
-        .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
+        .shadow(color: Color.black.opacity(0.02), radius: 10, x: 0, y: 4)
     }
 
     private var prominentContent: some View {
@@ -1480,8 +1774,8 @@ private struct VehicleRangeEstimatePanel: View {
         }
         .padding(16)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .shadow(color: Color.black.opacity(0.02), radius: 10, x: 0, y: 4)
     }
 }
 
@@ -1508,33 +1802,39 @@ private struct VehicleHealthPanel: View {
     var snapshot: NinebotVehicleSnapshot
 
     var body: some View {
-        let health = snapshot.state.health
         let warnings = snapshot.state.warningTexts
+        let health = snapshot.state.health
 
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
                 ZStack {
                     Circle()
                         .fill(healthColor(health.level).opacity(0.14))
-                    Image(systemName: health.systemImage)
+                    Image(systemName: snapshot.state.isCharging == true ? "bolt.fill" : "battery.100")
                         .font(.headline.weight(.semibold))
-                        .foregroundStyle(healthColor(health.level))
+                        .foregroundStyle(snapshot.state.isCharging == true ? Color.teslaGreen : batteryTextColor(snapshot.state))
                 }
                 .frame(width: 42, height: 42)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(health.title)
+                    Text("电池")
                         .font(.headline)
-                    Text(health.message)
+                    Text(snapshot.state.isCharging == true ? snapshot.state.chargeSummaryText : "查看电压、温度和充电信息")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                        .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text(snapshot.state.batteryText)
-                    .font(.title3.monospacedDigit().weight(.bold))
-                    .foregroundStyle(batteryTextColor(snapshot.state))
+                HStack(spacing: 8) {
+                    Text(snapshot.state.batteryText)
+                        .font(.title3.monospacedDigit().weight(.bold))
+                        .foregroundStyle(batteryTextColor(snapshot.state))
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(Color.teslaSecondaryText)
+                }
             }
 
             if !warnings.isEmpty {
@@ -1547,16 +1847,15 @@ private struct VehicleHealthPanel: View {
                     }
                 }
             }
-
-            HStack(spacing: 10) {
-                ControlMetricPill(title: "续航可信度", value: snapshot.state.rangePerBatteryPercentText, systemImage: "gauge.with.dots.needle.33percent")
-                ControlMetricPill(title: "预估准确率", value: snapshot.state.rangeEstimateAccuracyText, systemImage: "target")
-            }
         }
-        .padding(16)
+        .padding(18)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.teslaHairline, lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.02), radius: 10, x: 0, y: 4)
     }
 }
 
@@ -1731,6 +2030,7 @@ private struct TripTrendView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 TripTrendHeroCard(snapshot: snapshot, analysis: analysis)
+                TripTrendRangeModelCard(snapshot: snapshot)
                 TripTrendDailyCard(records: analysis.dailyRecords)
                 TripTrendRideCard(analysis: analysis)
                 TripTrendInsightCard(analysis: analysis)
@@ -1745,6 +2045,49 @@ private struct TripTrendView: View {
         .background(Color.teslaPageBackground.ignoresSafeArea())
         .navigationTitle("趋势分析")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct TripTrendRangeModelCard: View {
+    var snapshot: NinebotVehicleSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("本地续航模型")
+                        .font(.headline)
+                        .foregroundStyle(Color.teslaPrimaryText)
+                    Text(snapshot.state.rangeModelInsightText)
+                        .font(.caption)
+                        .foregroundStyle(Color.teslaSecondaryText)
+                }
+
+                Spacer(minLength: 8)
+
+                Text(snapshot.state.localEstimatedMileageText)
+                    .font(.title3.monospacedDigit().weight(.bold))
+                    .foregroundStyle(Color.teslaPrimaryText)
+                    .lineLimit(1)
+            }
+
+            LazyVGrid(
+                columns: [
+                    GridItem(.flexible(), spacing: 10),
+                    GridItem(.flexible(), spacing: 10)
+                ],
+                spacing: 10
+            ) {
+                BasicInfoTile(title: "准确率", value: snapshot.state.rangeEstimateAccuracyText, systemImage: "target")
+                BasicInfoTile(title: "有效样本", value: "\(snapshot.state.observedRangeSampleCount) 次", systemImage: "scope")
+                BasicInfoTile(title: "近期效率", value: snapshot.state.rangePerBatteryPercentText, systemImage: "gauge.with.dots.needle.33percent")
+                BasicInfoTile(title: "接口续航", value: snapshot.state.enduranceText, systemImage: "road.lanes")
+            }
+        }
+        .padding(16)
+        .background(Color.teslaCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
     }
 }
 
@@ -1947,7 +2290,7 @@ private struct TripTrendInsightCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("趋势提示")
+            Text("本地模型提示")
                 .font(.headline)
                 .foregroundStyle(Color.teslaPrimaryText)
 
@@ -2024,7 +2367,7 @@ private struct TrendBarChart: View {
         GeometryReader { proxy in
             let maxValue = max(values.map(\.value).max() ?? 0, 1)
             let chartHeight = max(proxy.size.height - 42, 1)
-            let barWidth = min(max(proxy.size.width / CGFloat(max(values.count, 1)) * 0.34, 6), 16)
+            let barWidth = min(max(proxy.size.width / CGFloat(max(values.count, 1)) * 0.24, 4), 11)
 
             ZStack(alignment: .bottom) {
                 VStack(spacing: 0) {
@@ -2037,14 +2380,14 @@ private struct TrendBarChart: View {
                 .padding(.horizontal, 4)
                 .padding(.bottom, 20)
 
-                HStack(alignment: .bottom, spacing: values.count > 10 ? 4 : 8) {
+                HStack(alignment: .bottom, spacing: values.count > 10 ? 7 : 10) {
                     ForEach(values) { item in
                         VStack(spacing: 6) {
                             Text(shortTrendValue(item.value))
                                 .font(.caption2.monospacedDigit().weight(.semibold))
                                 .foregroundStyle(Color.teslaSecondaryText)
                                 .lineLimit(1)
-                                .minimumScaleFactor(0.62)
+                                .minimumScaleFactor(0.55)
 
                             ZStack(alignment: .bottom) {
                                 Capsule()
@@ -2485,8 +2828,12 @@ private struct VehicleActionPanel: View {
         }
         .padding(12)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: Color.black.opacity(0.05), radius: 18, x: 0, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.teslaHairline, lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.02), radius: 10, x: 0, y: 4)
         .padding(.horizontal, 16)
     }
 
@@ -2522,9 +2869,9 @@ private struct VehicleControlLoadingStrip: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(Color.teslaControlBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(Color.teslaGreen.opacity(0.24), lineWidth: 1)
         }
     }
@@ -2701,42 +3048,40 @@ private struct VehicleBasicsPanel: View {
     var snapshot: NinebotVehicleSnapshot
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("基础信息")
-                        .font(.headline)
-                    Text("点击进入完整车辆信息")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-                HStack(spacing: 4) {
-                    Text("详细")
-                    Image(systemName: "chevron.right")
-                }
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+        HStack(alignment: .center, spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.teslaControlBackground)
+                Image(systemName: "info.circle.fill")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(Color.teslaPrimaryText)
             }
+            .frame(width: 42, height: 42)
 
-            LazyVGrid(
-                columns: [
-                    GridItem(.flexible(), spacing: 10),
-                    GridItem(.flexible(), spacing: 10)
-                ],
-                spacing: 10
-            ) {
-                BasicInfoTile(title: "电量", value: snapshot.state.batteryText, systemImage: "battery.100")
-                BasicInfoTile(title: "本地预估", value: snapshot.state.localEstimatedMileageText, systemImage: "function")
-                BasicInfoTile(title: "锁车", value: snapshot.state.lockText, systemImage: snapshot.state.isLocked == true ? "lock.fill" : "lock.open.fill")
-                BasicInfoTile(title: "当月行程", value: snapshot.state.monthMileageText, systemImage: "calendar")
+            VStack(alignment: .leading, spacing: 4) {
+                Text("查看信息")
+                    .font(.headline)
+                    .foregroundStyle(Color.teslaPrimaryText)
+                Text("\(snapshot.vehicle.model) · 更新 \(formatTime(snapshot.state.updatedAt))")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.teslaSecondaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(Color.teslaSecondaryText)
         }
-        .padding(16)
+        .padding(18)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.teslaHairline, lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.02), radius: 10, x: 0, y: 4)
     }
 }
 
@@ -2766,7 +3111,7 @@ private struct BasicInfoTile: View {
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: 82, alignment: .leading)
         .background(Color.teslaControlBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
 
@@ -2788,12 +3133,14 @@ private struct VehicleDetailPanel: View {
                 DetailRow(title: "电池电压", value: snapshot.state.batteryVoltageText, systemImage: "bolt.batteryblock.fill")
                 DetailRow(title: "电池温度", value: snapshot.state.batteryTemperatureText, systemImage: "thermometer.medium")
                 DetailRow(title: "循环次数", value: snapshot.state.batteryCycleCountText, systemImage: "arrow.trianglehead.2.clockwise")
-                DetailRow(title: "充电功率", value: snapshot.state.chargingPowerText, systemImage: "bolt.meter")
+                DetailRow(title: "充电功率", value: snapshot.state.chargingPowerText, systemImage: "bolt.fill")
                 DetailRow(title: "预估续航", value: snapshot.state.enduranceText, systemImage: "road.lanes")
                 DetailRow(title: "AI 预估", value: snapshot.state.aiEstimatedMileageText, systemImage: "sparkles")
                 DetailRow(title: "本地预估", value: snapshot.state.localEstimatedMileageText, systemImage: "function")
+                DetailRow(title: "本地模型", value: snapshot.state.rangeModelSummaryText, systemImage: "target")
                 DetailRow(title: "续航可信", value: snapshot.state.rangePerBatteryPercentText, systemImage: "speedometer")
                 DetailRow(title: "充电状态", value: snapshot.state.chargingStateText, systemImage: "bolt.fill")
+                DetailRow(title: "充电速度", value: snapshot.state.estimatedChargingSpeedText, systemImage: "bolt.car.fill")
                 DetailRow(title: "充至 80%", value: snapshot.state.estimatedChargeTo80TimeText, systemImage: "battery.75")
                 DetailRow(title: "80% 时间", value: snapshot.state.estimatedChargeTo80ClockText, systemImage: "clock.badge.checkmark")
                 DetailRow(title: "预计充满", value: snapshot.state.estimatedFullChargeTimeText, systemImage: "timer")
@@ -3072,8 +3419,8 @@ private struct NinebotRideDetailView: View {
 
                 if let localRecord {
                     RideTrackMapPanel(record: localRecord)
-                } else if !interfaceTrackCoordinates.isEmpty {
-                    InterfaceRideTrackMapPanel(coordinates: interfaceTrackCoordinates)
+                } else if !interfaceTrackPoints.isEmpty {
+                    InterfaceRideTrackMapPanel(points: interfaceTrackPoints)
                 }
 
                 DetailSection(title: "接口行程") {
@@ -3113,9 +3460,9 @@ private struct NinebotRideDetailView: View {
         remoteDetail?.parsedRecord ?? record
     }
 
-    private var interfaceTrackCoordinates: [CLLocationCoordinate2D] {
+    private var interfaceTrackPoints: [NinebotInterfaceTrackPoint] {
         guard localRecord == nil else { return [] }
-        return remoteDetail?.interfaceTrackCoordinates ?? []
+        return remoteDetail?.interfaceTrackPoints ?? []
     }
 
     private func loadRemoteDetailIfNeeded() async {
@@ -3216,7 +3563,7 @@ private struct RideTrackMapPanel: View {
 
     init(record: NinebotRecordedRide) {
         self.record = record
-        _cameraPosition = State(initialValue: .region(Self.region(for: record.coordinates)))
+        _cameraPosition = State(initialValue: .region(Self.region(for: record.speedTrackCoordinates)))
     }
 
     var body: some View {
@@ -3240,35 +3587,21 @@ private struct RideTrackMapPanel: View {
             }
 
             Map(position: $cameraPosition) {
-                if record.coordinates.count > 1 {
-                    MapPolyline(coordinates: record.coordinates)
-                        .stroke(Color.teslaGreen, lineWidth: 4)
+                ForEach(record.speedTrackSegments) { segment in
+                    MapPolyline(coordinates: segment.coordinates)
+                        .stroke(segment.color, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
                 }
 
-                ForEach(Array(record.sampledTrackCoordinates().enumerated()), id: \.offset) { _, coordinate in
-                    Annotation("轨迹点", coordinate: coordinate) {
-                        Circle()
-                            .fill(Color.teslaGreen)
-                            .frame(width: 5, height: 5)
-                            .overlay {
-                                Circle()
-                                    .stroke(Color(.systemBackground), lineWidth: 1)
-                            }
+                if let maxSpeedPoint = record.maxSpeedTrackPoint {
+                    Annotation("最快", coordinate: maxSpeedPoint.coordinate) {
+                        TrackMaxSpeedBadge(speed: maxSpeedPoint.speedKmh)
                     }
-                }
-
-                if let first = record.coordinates.first {
-                    Marker("开始", systemImage: "play.fill", coordinate: first)
-                        .tint(Color.teslaGreen)
-                }
-
-                if let last = record.coordinates.last {
-                    Marker("结束", systemImage: "stop.fill", coordinate: last)
-                        .tint(.red)
                 }
             }
             .frame(height: 240)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            TrackSpeedLegend()
 
             LazyVGrid(
                 columns: [
@@ -3314,12 +3647,12 @@ private struct RideTrackMapPanel: View {
 }
 
 private struct InterfaceRideTrackMapPanel: View {
-    var coordinates: [CLLocationCoordinate2D]
+    var points: [NinebotInterfaceTrackPoint]
     @State private var cameraPosition: MapCameraPosition
 
-    init(coordinates: [CLLocationCoordinate2D]) {
-        self.coordinates = coordinates
-        _cameraPosition = State(initialValue: .region(Self.region(for: coordinates)))
+    init(points: [NinebotInterfaceTrackPoint]) {
+        self.points = points
+        _cameraPosition = State(initialValue: .region(Self.region(for: points.map(\.coordinate))))
     }
 
     var body: some View {
@@ -3329,28 +3662,44 @@ private struct InterfaceRideTrackMapPanel: View {
                 .foregroundStyle(Color.teslaPrimaryText)
 
             Map(position: $cameraPosition) {
-                if coordinates.count > 1 {
-                    MapPolyline(coordinates: coordinates)
-                        .stroke(Color.teslaGreen, lineWidth: 4)
+                ForEach(speedSegments) { segment in
+                    MapPolyline(coordinates: segment.coordinates)
+                        .stroke(segment.color, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
                 }
 
-                if let first = coordinates.first {
-                    Marker("开始", systemImage: "play.fill", coordinate: first)
-                        .tint(Color.teslaGreen)
-                }
-
-                if let last = coordinates.last {
-                    Marker("结束", systemImage: "stop.fill", coordinate: last)
-                        .tint(.red)
+                if let maxSpeedPoint {
+                    Annotation("最快", coordinate: maxSpeedPoint.coordinate) {
+                        TrackMaxSpeedBadge(speed: maxSpeedPoint.speedKmh)
+                    }
                 }
             }
             .frame(height: 240)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            TrackSpeedLegend()
         }
         .padding(16)
         .background(Color.teslaCardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
+    }
+
+    private var speedPoints: [TrackSpeedPoint] {
+        points.enumerated().map { index, point in
+            TrackSpeedPoint(
+                id: point.id.isEmpty ? "interface-\(index)" : point.id,
+                coordinate: point.coordinate,
+                speedKmh: point.speedKmh
+            )
+        }
+    }
+
+    private var speedSegments: [TrackSpeedSegment] {
+        makeSpeedTrackSegments(from: speedPoints)
+    }
+
+    private var maxSpeedPoint: TrackSpeedPoint? {
+        bestSpeedTrackPoint(from: speedPoints)
     }
 
     private static func region(for coordinates: [CLLocationCoordinate2D]) -> MKCoordinateRegion {
@@ -3377,9 +3726,132 @@ private struct InterfaceRideTrackMapPanel: View {
     }
 }
 
+private struct TrackSpeedPoint: Identifiable {
+    var id: String
+    var coordinate: CLLocationCoordinate2D
+    var speedKmh: Double?
+}
+
+private struct TrackSpeedSegment: Identifiable {
+    var id: String
+    var coordinates: [CLLocationCoordinate2D]
+    var speedKmh: Double?
+
+    var color: Color {
+        speedTrackColor(speedKmh)
+    }
+}
+
+private struct TrackMaxSpeedBadge: View {
+    var speed: Double?
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "speedometer")
+                .font(.caption2.weight(.bold))
+            Text(formatSpeed(speed))
+                .font(.caption2.monospacedDigit().weight(.bold))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(Color.red)
+        .clipShape(Capsule())
+        .shadow(color: Color.black.opacity(0.24), radius: 8, x: 0, y: 4)
+    }
+}
+
+private struct TrackSpeedLegend: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            legendItem(color: .cyan, title: "低速")
+            legendItem(color: Color.teslaGreen, title: "巡航")
+            legendItem(color: .orange, title: "较快")
+            legendItem(color: .red, title: "最快")
+            Spacer(minLength: 0)
+        }
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(Color.teslaSecondaryText)
+    }
+
+    private func legendItem(color: Color, title: String) -> some View {
+        HStack(spacing: 4) {
+            Capsule()
+                .fill(color)
+                .frame(width: 16, height: 4)
+            Text(title)
+        }
+    }
+}
+
 private extension NinebotRecordedRide {
     var coordinates: [CLLocationCoordinate2D] {
         trackCoordinates
+    }
+
+    var speedTrackPoints: [TrackSpeedPoint] {
+        points
+            .sorted { $0.date < $1.date }
+            .filter {
+                (-90...90).contains($0.latitude)
+                    && (-180...180).contains($0.longitude)
+                    && (($0.horizontalAccuracy ?? 0) <= 120)
+            }
+            .enumerated()
+            .map { index, point in
+                TrackSpeedPoint(
+                    id: point.id.isEmpty ? "local-\(index)" : point.id,
+                    coordinate: NinebotCoordinateTransform.mapKitCoordinate(latitude: point.latitude, longitude: point.longitude),
+                    speedKmh: point.speedKmh
+                )
+            }
+    }
+
+    var speedTrackCoordinates: [CLLocationCoordinate2D] {
+        speedTrackPoints.map(\.coordinate)
+    }
+
+    var speedTrackSegments: [TrackSpeedSegment] {
+        makeSpeedTrackSegments(from: speedTrackPoints)
+    }
+
+    var maxSpeedTrackPoint: TrackSpeedPoint? {
+        bestSpeedTrackPoint(from: speedTrackPoints)
+    }
+}
+
+private func makeSpeedTrackSegments(from points: [TrackSpeedPoint]) -> [TrackSpeedSegment] {
+    guard points.count > 1 else { return [] }
+
+    return (0..<(points.count - 1)).map { index in
+        let start = points[index]
+        let end = points[index + 1]
+        let speed = end.speedKmh ?? start.speedKmh
+        return TrackSpeedSegment(
+            id: "\(start.id)-\(end.id)-\(index)",
+            coordinates: [start.coordinate, end.coordinate],
+            speedKmh: speed
+        )
+    }
+}
+
+private func bestSpeedTrackPoint(from points: [TrackSpeedPoint]) -> TrackSpeedPoint? {
+    points
+        .filter { ($0.speedKmh ?? 0) > 0.5 }
+        .max { ($0.speedKmh ?? 0) < ($1.speedKmh ?? 0) }
+}
+
+private func speedTrackColor(_ speed: Double?) -> Color {
+    guard let speed else { return Color.teslaGreen }
+    switch speed {
+    case ..<8:
+        return .cyan
+    case ..<25:
+        return Color.teslaGreen
+    case ..<40:
+        return .orange
+    default:
+        return .red
     }
 }
 

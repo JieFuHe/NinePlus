@@ -87,18 +87,25 @@ struct NinebotProxyClient {
         let vehiclesPayload = try await request(method: "GET", path: ["vehicles"])
         let vehicleValues = Self.arrayPayload(from: vehiclesPayload, preferredKeys: ["vehicles", "data"])
         let vehicles = vehicleValues.compactMap(Self.vehicleInfo)
+        let currentMonth = Self.currentMonthString()
 
         var snapshots: [NinebotVehicleSnapshot] = []
         for vehicle in vehicles {
             let status = try? await request(method: "GET", path: ["vehicles", vehicle.sn, "status"])
-            let travel = try? await request(
-                method: "GET",
-                path: ["vehicles", vehicle.sn, "travel"],
-                queryItems: [URLQueryItem(name: "month", value: Self.currentMonthString())]
-            )
+            let travel = try? await fetchTravel(sn: vehicle.sn, month: currentMonth)
             let battery = try? await request(method: "GET", path: ["vehicles", vehicle.sn, "battery"])
-            let state = Self.vehicleState(status: status, travel: travel, battery: battery, updatedAt: Date())
-            snapshots.append(NinebotVehicleSnapshot(vehicle: vehicle, state: state))
+            let monthlyTravels = await fetchMonthlyTravels(
+                sn: vehicle.sn,
+                authDate: vehicle.authDate,
+                currentMonth: currentMonth,
+                currentTravel: travel
+            )
+            var state = Self.vehicleState(status: status, travel: travel, battery: battery, updatedAt: Date())
+            if let totalMileage = Self.totalMileage(fromMonthlyTravels: monthlyTravels) {
+                state.totalMileage = totalMileage
+            }
+            let resolvedVehicle = Self.vehicleInfo(vehicle, addingImageFrom: status, battery: battery)
+            snapshots.append(NinebotVehicleSnapshot(vehicle: resolvedVehicle, state: state))
         }
 
         let resolvedSelectedSN: String?
@@ -127,6 +134,53 @@ struct NinebotProxyClient {
             fetchedAt: Date(),
             raw: payload,
             parsedRecord: Self.rideRecord(from: payload, index: 0)
+        )
+    }
+
+    private func fetchTravel(sn: String, month: String) async throws -> JSONValue {
+        try await request(
+            method: "GET",
+            path: ["vehicles", sn, "travel"],
+            queryItems: [URLQueryItem(name: "month", value: month)]
+        )
+    }
+
+    private func fetchMonthlyTravels(
+        sn: String,
+        authDate: Date?,
+        currentMonth: String,
+        currentTravel: JSONValue?
+    ) async -> [JSONValue]? {
+        let months = Self.monthStrings(from: authDate, through: Date())
+        guard !months.isEmpty else {
+            return currentTravel.map { [$0] }
+        }
+
+        var payloads: [JSONValue] = []
+        for month in months {
+            if month == currentMonth, let currentTravel {
+                payloads.append(currentTravel)
+                continue
+            }
+
+            do {
+                payloads.append(try await fetchTravel(sn: sn, month: month))
+            } catch {
+                return nil
+            }
+        }
+        return payloads
+    }
+
+    func registerPushDevice(token: String, bundleID: String, environment: String) async throws {
+        _ = try await request(
+            method: "POST",
+            path: ["devices", "register"],
+            body: [
+                "token": token,
+                "bundle_id": bundleID,
+                "environment": environment,
+            ]
         )
     }
 
@@ -267,6 +321,28 @@ private extension NinebotProxyClient {
             imageURLString: firstString(["v6_light_img_url", "img_url", "img"], in: object),
             raw: object
         )
+    }
+
+    static func vehicleInfo(_ vehicle: NinebotVehicleInfo, addingImageFrom status: JSONValue?, battery: JSONValue?) -> NinebotVehicleInfo {
+        guard vehicle.imageURLString?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false else {
+            return vehicle
+        }
+
+        let statusObject = status?.objectValue ?? [:]
+        let batteryObject = battery?.objectValue ?? [:]
+        guard let imageURLString = firstString(
+            ["v6_light_img_url", "v6LightImgUrl", "img_url", "imgUrl", "img", "image_url", "imageUrl"],
+            in: statusObject
+        ) ?? firstString(
+            ["v6_light_img_url", "v6LightImgUrl", "img_url", "imgUrl", "img", "image_url", "imageUrl"],
+            in: batteryObject
+        ) else {
+            return vehicle
+        }
+
+        var resolved = vehicle
+        resolved.imageURLString = imageURLString
+        return resolved
     }
 
     static func vehicleState(status: JSONValue?, travel: JSONValue?, battery: JSONValue? = nil, updatedAt: Date) -> NinebotVehicleState {
@@ -442,6 +518,29 @@ private extension NinebotProxyClient {
         }
     }
 
+    static func totalMileage(fromMonthlyTravels travels: [JSONValue]?) -> Double? {
+        guard let travels else { return nil }
+        var total = 0.0
+        var hasMileage = false
+
+        for travel in travels {
+            guard let object = travel.objectValue else { continue }
+            if let mileage = firstDouble(["total_mileages", "totalMileage", "monthMileage", "mileage"], in: object) {
+                total += max(mileage, 0)
+                hasMileage = true
+                continue
+            }
+
+            let dailyTotal = dailyMileageRecords(from: object).reduce(0) { $0 + max($1.mileage, 0) }
+            if dailyTotal > 0 {
+                total += dailyTotal
+                hasMileage = true
+            }
+        }
+
+        return hasMileage ? total : nil
+    }
+
     static func firstInt(_ keys: [String], in object: [String: JSONValue]) -> Int? {
         for key in keys {
             if let value = object[key]?.intValue {
@@ -613,12 +712,41 @@ private extension NinebotProxyClient {
     }
 
     static func currentMonthString() -> String {
+        monthString(for: Date())
+    }
+
+    static func monthString(for date: Date) -> String {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = chinaTimeZone
         formatter.dateFormat = "yyyyMM"
-        return formatter.string(from: Date())
+        return formatter.string(from: date)
+    }
+
+    static func monthStrings(from startDate: Date?, through endDate: Date) -> [String] {
+        guard let startDate else {
+            return [monthString(for: endDate)]
+        }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = chinaTimeZone
+        let startComponents = calendar.dateComponents([.year, .month], from: startDate)
+        let endComponents = calendar.dateComponents([.year, .month], from: endDate)
+        guard let start = calendar.date(from: startComponents),
+              let end = calendar.date(from: endComponents),
+              start <= end else {
+            return [monthString(for: endDate)]
+        }
+
+        var result: [String] = []
+        var cursor = start
+        while cursor <= end {
+            result.append(monthString(for: cursor))
+            guard let next = calendar.date(byAdding: .month, value: 1, to: cursor) else { break }
+            cursor = next
+        }
+        return result
     }
 
     static var chinaTimeZone: TimeZone {

@@ -27,7 +27,7 @@ struct NinebotStatusWidget: Widget {
             NinebotHomeWidgetView(entry: entry)
         }
         .configurationDisplayName("九号车况")
-        .description("显示车辆电量、续航和锁车状态。")
+        .description("显示车辆电量、续航和更新时间。")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
         .contentMarginsDisabled()
     }
@@ -419,10 +419,7 @@ private struct NinebotHomeWidgetView: View {
                         vehicleImages: entry.vehicleImages
                     )
                 default:
-                    MediumStatusWidget(
-                        dashboard: entry.dashboard,
-                        vehicleImages: entry.vehicleImages
-                    )
+                    MediumStatusWidget(dashboard: entry.dashboard)
                 }
             } else {
                 EmptyWidgetView(message: entry.errorMessage ?? "暂无车辆")
@@ -437,75 +434,116 @@ private struct SmallStatusWidget: View {
     var vehicleImageData: Data?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(snapshot.vehicle.name)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(WidgetTheme.primaryText)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+        ZStack {
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .fill(WidgetTheme.smallVehicleBackground)
 
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text(snapshot.state.batteryText)
-                    .font(.system(size: 29, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(batteryColor(snapshot.state.battery, isCharging: snapshot.state.isCharging == true))
+            Circle()
+                .stroke(Color.white.opacity(0.07), lineWidth: 20)
+                .frame(width: 128, height: 128)
+                .offset(x: 54, y: 40)
+
+            WidgetVehicleImage(imageData: vehicleImageData)
+                .frame(width: 154, height: 94)
+                .offset(x: 48, y: 42)
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text(snapshot.vehicle.name)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.56))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.55)
+                    .minimumScaleFactor(0.72)
 
-                Text("\(estimatedRangeShortText(snapshot.state))(预估)")
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(WidgetTheme.primaryText)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.48)
+                HStack(alignment: .center, spacing: 8) {
+                    SmallWidgetBatteryRing(
+                        value: snapshot.state.batteryFraction,
+                        battery: snapshot.state.battery,
+                        isCharging: snapshot.state.isCharging == true
+                    )
+                    .frame(width: 30, height: 30)
+
+                    HStack(alignment: .firstTextBaseline, spacing: 2) {
+                        Text(estimatedRangeDigits(snapshot.state))
+                            .font(.system(size: 35, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.58)
+                        Text("km")
+                            .font(.system(size: 16, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.84))
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                Spacer(minLength: 34)
+
+                if snapshot.state.isCharging == true {
+                    Label("充电中", systemImage: "bolt.fill")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(WidgetTheme.green)
+                        .lineLimit(1)
+                }
             }
-
-            WidgetBatteryBar(value: snapshot.state.batteryFraction, isCharging: snapshot.state.isCharging == true, height: 5)
-
-            WidgetStatusLine(state: snapshot.state)
-
-            Spacer(minLength: 0)
-
-            HStack(alignment: .bottom) {
-                WidgetRoundControlIcon(systemImage: snapshot.state.isLocked == false ? "lock.open.fill" : "lock.fill")
-                    .frame(width: 36, height: 36)
-
-                Spacer(minLength: 4)
-
-                WidgetVehicleImage(imageData: vehicleImageData)
-                    .frame(width: 72, height: 42)
-                    .offset(y: 2)
-            }
+            .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .padding(10)
+    }
+}
+
+private struct SmallWidgetBatteryRing: View {
+    var value: Double
+    var battery: Int?
+    var isCharging: Bool
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(.white.opacity(0.20), lineWidth: 5)
+
+            Circle()
+                .trim(from: 0, to: min(max(value, 0), 1))
+                .stroke(activeColor, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+
+            Circle()
+                .fill(WidgetTheme.smallVehicleBackground)
+                .frame(width: 12, height: 12)
+        }
+    }
+
+    private var activeColor: Color {
+        if isCharging { return WidgetTheme.green }
+        guard let battery else { return WidgetTheme.green }
+        return battery < 20 ? .red : WidgetTheme.green
     }
 }
 
 private struct MediumStatusWidget: View {
     var dashboard: NinebotDashboard
-    var vehicleImages: [String: Data] = [:]
 
     var body: some View {
         if let primary = dashboard.primaryVehicle {
-            VStack(spacing: 8) {
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 6) {
                         Text(primary.vehicle.name)
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(WidgetTheme.secondaryText)
                             .lineLimit(1)
-                            .minimumScaleFactor(0.7)
+                            .minimumScaleFactor(0.68)
 
-                        HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        HStack(alignment: .firstTextBaseline, spacing: 7) {
                             Text(estimatedRangeDigits(primary.state))
-                                .font(.system(size: 33, weight: .bold, design: .rounded))
+                                .font(.system(size: 38, weight: .bold, design: .rounded))
                                 .monospacedDigit()
                                 .foregroundStyle(WidgetTheme.primaryText)
                                 .lineLimit(1)
-                                .minimumScaleFactor(0.62)
+                                .minimumScaleFactor(0.58)
 
                             Text("km")
-                                .font(.system(size: 19, weight: .semibold, design: .rounded))
+                                .font(.system(size: 18, weight: .semibold, design: .rounded))
                                 .foregroundStyle(WidgetTheme.primaryText)
 
                             Text("预估")
@@ -513,43 +551,36 @@ private struct MediumStatusWidget: View {
                                 .foregroundStyle(WidgetTheme.secondaryText)
                                 .lineLimit(1)
                         }
-
-                        HStack(spacing: 8) {
-                            MediumBatteryProgressBar(
-                                value: primary.state.batteryFraction,
-                                battery: primary.state.battery,
-                                isCharging: primary.state.isCharging == true
-                            )
-                            .frame(width: 122, height: 7)
-
-                            Text(primary.state.batteryText)
-                                .font(.system(size: 13, weight: .bold, design: .rounded))
-                                .monospacedDigit()
-                                .foregroundStyle(batteryColor(primary.state.battery, isCharging: primary.state.isCharging == true))
-                                .lineLimit(1)
-                        }
-
-                        MediumWidgetInlineStatus(state: primary.state)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                    VStack(alignment: .trailing, spacing: 8) {
+                    VStack(alignment: .trailing, spacing: 5) {
                         Text("\(formatWidgetTime(primary.state.updatedAt)) 更新")
                             .font(.caption2.weight(.medium))
                             .foregroundStyle(WidgetTheme.secondaryText)
                             .lineLimit(1)
-                            .minimumScaleFactor(0.75)
+                            .minimumScaleFactor(0.72)
 
-                        WidgetVehicleImage(imageData: vehicleImages[primary.vehicle.sn])
-                            .frame(width: 150, height: 70)
-                            .offset(x: 6, y: -2)
+                        Text(primary.state.batteryText)
+                            .font(.system(size: 25, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(batteryColor(primary.state.battery, isCharging: primary.state.isCharging == true))
+                            .lineLimit(1)
+
+                        MediumWidgetStatusPill(state: primary.state)
                     }
-                    .frame(width: 150, alignment: .trailing)
+                    .frame(width: 112, alignment: .trailing)
                 }
-                .frame(maxHeight: .infinity, alignment: .top)
+
+                MediumBatteryProgressBar(
+                    value: primary.state.batteryFraction,
+                    battery: primary.state.battery,
+                    isCharging: primary.state.isCharging == true
+                )
+                .frame(height: 7)
 
                 MediumWidgetControlStrip(state: primary.state)
-                    .frame(height: 42)
+                    .frame(height: 44)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
@@ -637,7 +668,6 @@ private struct MediumWidgetControlStrip: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            MediumWidgetControlIcon(systemImage: state.isLocked == false ? "lock.open.fill" : "lock.fill")
             MediumWidgetControlIcon(systemImage: state.isFullyCharged ? "battery.100" : (state.isCharging == true ? "bolt.fill" : "power"))
             MediumWidgetControlIcon(systemImage: "shippingbox.fill")
             MediumWidgetControlIcon(systemImage: "speaker.wave.2.fill")
@@ -668,7 +698,7 @@ private struct LargeStatusWidget: View {
     var body: some View {
         if let primary = dashboard.primaryVehicle {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                HStack(alignment: .top, spacing: 10) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(primary.vehicle.name)
                             .font(.headline.weight(.semibold))
@@ -679,34 +709,28 @@ private struct LargeStatusWidget: View {
                             .font(.caption.weight(.medium))
                             .foregroundStyle(WidgetTheme.secondaryText)
                     }
-
-                    Spacer(minLength: 8)
-
-                    WidgetStatusPill(state: primary.state)
-                }
-
-                HStack(alignment: .center, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(estimatedRangeText(primary.state))
-                            .font(.system(size: 34, weight: .semibold, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(WidgetTheme.primaryText)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.56)
-
-                        Text(primary.state.batteryText)
-                            .font(.system(size: 30, weight: .semibold, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(batteryColor(primary.state.battery, isCharging: primary.state.isCharging == true))
-                            .lineLimit(1)
-
-                        WidgetStatusLine(state: primary.state)
-                            .font(.caption.weight(.semibold))
-                    }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     WidgetVehicleImage(imageData: vehicleImages[primary.vehicle.sn])
-                        .frame(width: 146, height: 86)
+                        .frame(width: 142, height: 72)
+                }
+
+                HStack(alignment: .lastTextBaseline, spacing: 10) {
+                    Text(estimatedRangeText(primary.state))
+                        .font(.system(size: 39, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(WidgetTheme.primaryText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.52)
+
+                    Spacer(minLength: 8)
+
+                    Text(primary.state.batteryText)
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(batteryColor(primary.state.battery, isCharging: primary.state.isCharging == true))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.58)
                 }
 
                 WidgetBatteryBar(value: primary.state.batteryFraction, isCharging: primary.state.isCharging == true, height: 7)
@@ -714,7 +738,7 @@ private struct LargeStatusWidget: View {
                 HStack(spacing: 8) {
                     WidgetInfoTile(title: "本月日均", value: primary.state.dailyAverageMileageText, systemImage: "calendar")
                     WidgetInfoTile(title: "行程均速", value: primary.state.averageSpeedText, systemImage: "speedometer")
-                    WidgetInfoTile(title: "最近骑行", value: primary.state.lastRideSummaryText, systemImage: "road.lanes")
+                    WidgetInfoTile(title: "最近骑行", value: primary.state.lastRideSummaryText, systemImage: "point.topleft.down.curvedto.point.bottomright.up")
                 }
                 .frame(height: 60)
 
@@ -802,21 +826,21 @@ private struct AccessoryCircularStatus: View {
             AccessoryWidgetBackground()
 
             Circle()
-                .stroke(.primary.opacity(0.24), lineWidth: 6)
-                .padding(3)
+                .stroke(.primary.opacity(0.24), lineWidth: 7)
+                .padding(2)
 
             Circle()
                 .trim(from: 0, to: fraction)
-                .stroke(.primary, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                .stroke(.primary, style: StrokeStyle(lineWidth: 7, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-                .padding(3)
+                .padding(2)
 
             Text(accessoryCircularPercentText(state))
-                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .font(.system(size: 20, weight: .bold, design: .rounded))
                 .monospacedDigit()
                 .lineLimit(1)
-                .minimumScaleFactor(0.58)
-                .padding(.horizontal, 9)
+                .minimumScaleFactor(0.54)
+                .padding(.horizontal, 7)
             .foregroundStyle(.primary)
             .widgetAccentable()
         }
@@ -845,11 +869,6 @@ private struct WidgetLargeControlStrip: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            WidgetLargeControlItem(
-                title: state.isLocked == false ? "未锁" : "已锁",
-                systemImage: state.isLocked == false ? "lock.open.fill" : "lock.fill",
-                accent: statusColor(state)
-            )
             WidgetLargeControlItem(
                 title: state.isFullyCharged ? "已满" : (state.isCharging == true ? "充电" : "电源"),
                 systemImage: state.isFullyCharged ? "battery.100" : (state.isCharging == true ? "bolt.fill" : "power"),
@@ -900,7 +919,6 @@ private struct WidgetControlGrid: View {
             ],
             spacing: spacing
         ) {
-            WidgetControlGlyph(systemImage: state.isLocked == false ? "lock.open.fill" : "lock.fill", size: glyphSize)
             WidgetControlGlyph(systemImage: state.isFullyCharged ? "battery.100" : (state.isCharging == true ? "bolt.fill" : "power"), size: glyphSize)
             WidgetControlGlyph(systemImage: "shippingbox.fill", size: glyphSize)
             WidgetControlGlyph(systemImage: "bell.fill", size: glyphSize)
@@ -1162,6 +1180,10 @@ private enum WidgetTheme {
     static let controlBackground = dynamic(
         light: UIColor(red: 0.91, green: 0.925, blue: 0.94, alpha: 1),
         dark: UIColor(red: 0.125, green: 0.135, blue: 0.152, alpha: 1)
+    )
+    static let smallVehicleBackground = dynamic(
+        light: UIColor(red: 0.105, green: 0.108, blue: 0.112, alpha: 1),
+        dark: UIColor(red: 0.045, green: 0.048, blue: 0.054, alpha: 1)
     )
     static let chargingActivityBackground = dynamic(
         light: UIColor(red: 0.91, green: 0.97, blue: 0.96, alpha: 1),

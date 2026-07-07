@@ -340,7 +340,7 @@ private struct NinebotVehicleDetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .background(Color(.systemGroupedBackground))
+        .background(Color.teslaPageBackground)
         .navigationTitle("车辆详情")
         .navigationBarTitleDisplayMode(.inline)
         .overlay(alignment: .top) {
@@ -572,9 +572,9 @@ private struct VehicleChargingAnalysisPanel: View {
         }
         .padding(16)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.teslaHairline, lineWidth: 1)
         }
     }
@@ -857,6 +857,7 @@ private struct NinebotTripsView: View {
     @ObservedObject var model: NinebotViewModel
     var snapshot: NinebotVehicleSnapshot
     var recordedRides: [NinebotRecordedRide] = []
+    @State private var selectedMonth = tripMonthString(for: Date())
 
     var body: some View {
         ScrollView {
@@ -868,11 +869,26 @@ private struct NinebotTripsView: View {
                     TripTrendEntryCard(snapshot: snapshot)
                 }
                 .buttonStyle(.plain)
+                TripMonthFilterPanel(
+                    months: monthOptions,
+                    selectedMonth: selectedMonth,
+                    nextFetchMonth: nextFetchMonth,
+                    isSyncing: model.syncingTravelMonth != nil,
+                    onSelect: { selectedMonth = $0 },
+                    onFetchOlder: {
+                        let targetMonth = nextFetchMonth
+                        selectedMonth = targetMonth
+                        Task {
+                            await model.syncTravelMonth(vehicleSN: snapshot.vehicle.sn, month: targetMonth)
+                        }
+                    }
+                )
                 RideListSection(
                     model: model,
-                    records: snapshot.state.rides,
+                    records: filteredRecords,
                     recordedRides: recordedRides,
-                    vehicleSN: snapshot.vehicle.sn
+                    vehicleSN: snapshot.vehicle.sn,
+                    selectedMonth: selectedMonth
                 )
             }
             .padding(16)
@@ -881,6 +897,129 @@ private struct NinebotTripsView: View {
         .navigationTitle("行程")
         .navigationBarTitleDisplayMode(.inline)
     }
+
+    private var monthOptions: [String] {
+        var months = Set(snapshot.state.rides.compactMap(tripMonthString(for:)))
+        months.insert(tripMonthString(for: Date()))
+        months.insert(selectedMonth)
+        return months.sorted(by: >)
+    }
+
+    private var filteredRecords: [NinebotRideRecord] {
+        snapshot.state.rides.filter { tripMonthString(for: $0) == selectedMonth }
+    }
+
+    private var nextFetchMonth: String {
+        previousTripMonth(before: monthOptions.min() ?? selectedMonth)
+    }
+}
+
+private struct TripMonthFilterPanel: View {
+    var months: [String]
+    var selectedMonth: String
+    var nextFetchMonth: String
+    var isSyncing: Bool
+    var onSelect: (String) -> Void
+    var onFetchOlder: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("月份筛选")
+                        .font(.headline)
+                        .foregroundStyle(Color.teslaPrimaryText)
+                    Text("当前 \(tripMonthDisplayName(selectedMonth))")
+                        .font(.caption)
+                        .foregroundStyle(Color.teslaSecondaryText)
+                }
+
+                Spacer()
+
+                Button(action: onFetchOlder) {
+                    HStack(spacing: 6) {
+                        if isSyncing {
+                            ProgressView()
+                                .controlSize(.mini)
+                        } else {
+                            Image(systemName: "clock.arrow.circlepath")
+                        }
+                        Text("获取 \(tripMonthDisplayName(nextFetchMonth))")
+                    }
+                    .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .tint(Color.teslaGreen)
+                .disabled(isSyncing)
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(months, id: \.self) { month in
+                        Button {
+                            onSelect(month)
+                        } label: {
+                            Text(tripMonthDisplayName(month))
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(month == selectedMonth ? Color.white : Color.teslaPrimaryText)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(month == selectedMonth ? Color.teslaGreen : Color.teslaCardBackground)
+                                .clipShape(Capsule())
+                                .overlay {
+                                    Capsule()
+                                        .stroke(month == selectedMonth ? Color.clear : Color.teslaHairline, lineWidth: 1)
+                                }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 1)
+            }
+        }
+        .padding(14)
+        .background(Color.teslaCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color.teslaHairline, lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 8)
+    }
+}
+
+private func tripMonthString(for record: NinebotRideRecord) -> String? {
+    guard let date = record.startedAt ?? record.endedAt else { return nil }
+    return tripMonthString(for: date)
+}
+
+private func tripMonthString(for date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+    formatter.dateFormat = "yyyyMM"
+    return formatter.string(from: date)
+}
+
+private func previousTripMonth(before month: String) -> String {
+    guard month.count == 6,
+          let year = Int(month.prefix(4)),
+          let monthValue = Int(month.suffix(2)) else {
+        return tripMonthString(for: Date())
+    }
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+    let date = calendar.date(from: DateComponents(year: year, month: monthValue, day: 1)) ?? Date()
+    let previous = calendar.date(byAdding: .month, value: -1, to: date) ?? date
+    return tripMonthString(for: previous)
+}
+
+private func tripMonthDisplayName(_ month: String) -> String {
+    guard month.count == 6 else { return month }
+    let year = month.prefix(4)
+    let monthValue = month.suffix(2)
+    return "\(year).\(monthValue)"
 }
 
 private struct VehiclePickerSheet: View {
@@ -918,7 +1057,7 @@ private struct VehiclePickerSheet: View {
                 }
                 .padding(16)
             }
-            .background(Color(.systemGroupedBackground))
+            .background(Color.teslaPageBackground)
             .navigationTitle("切换车辆")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1040,7 +1179,7 @@ private struct VehiclePickerRow: View {
         }
         .padding(12)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
     }
 }
@@ -1082,7 +1221,7 @@ private struct VehicleControlHero: View {
     var onSwitchVehicle: () -> Void
 
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 16) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 5) {
                     Button {
@@ -1159,7 +1298,7 @@ private struct VehicleControlHero: View {
 
             VStack(spacing: 6) {
                 Text(snapshot.state.localEstimatedMileageText)
-                    .font(.system(size: 46, weight: .semibold, design: .rounded))
+                    .font(.system(size: 44, weight: .semibold, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(Color.teslaPrimaryText)
                     .lineLimit(1)
@@ -1171,7 +1310,7 @@ private struct VehicleControlHero: View {
             }
 
             ZStack(alignment: .bottom) {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .fill(Color.black.opacity(0.035))
                     .frame(height: 24)
                     .blur(radius: 16)
@@ -1181,7 +1320,7 @@ private struct VehicleControlHero: View {
                     .shadow(color: Color.black.opacity(0.12), radius: 24, x: 0, y: 18)
             }
             .frame(maxWidth: .infinity)
-            .frame(height: 208)
+            .frame(height: 196)
 
             VStack(spacing: 12) {
                 BatteryProgressBar(value: snapshot.state.batteryFraction)
@@ -1204,8 +1343,7 @@ private struct VehicleControlHero: View {
         }
         .padding(.horizontal, 22)
         .padding(.top, 10)
-        .padding(.bottom, 8)
-        .background(Color.teslaPageBackground)
+        .padding(.bottom, 4)
     }
 
     private var normalizedResolvedAddress: String? {
@@ -1433,7 +1571,7 @@ private struct VehicleLocationRideSummaryPanel: View {
     var onRingBell: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             VehicleLocationSummaryCard(
                 snapshot: snapshot,
                 resolvedAddress: resolvedAddress,
@@ -1448,7 +1586,7 @@ private struct VehicleLocationRideSummaryPanel: View {
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity)
         }
-        .frame(height: 184)
+        .frame(height: 198)
     }
 }
 
@@ -1478,52 +1616,79 @@ private struct VehicleLocationSummaryCard: View {
     }
 
     private func content(coordinate: CLLocationCoordinate2D?) -> some View {
-        ZStack(alignment: .bottomLeading) {
-            if let coordinate {
-                VehicleLocationPreviewMap(coordinate: coordinate)
-            } else {
-                ZStack {
-                    Color.teslaControlBackground
-                    Image(systemName: "map")
-                        .font(.title2.weight(.semibold))
-                        .foregroundStyle(Color.teslaSecondaryText)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(locationTitle)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("车辆位置")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.teslaPrimaryText)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.82)
+                    .lineLimit(1)
 
-                Text("车辆定位")
-                    .font(.caption.weight(.medium))
+                Spacer(minLength: 6)
+
+                Text("更新自\(formatTime(snapshot.state.updatedAt))")
+                    .font(.caption2.monospacedDigit().weight(.medium))
                     .foregroundStyle(Color.teslaSecondaryText)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.78)
             }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                LinearGradient(
-                    colors: [
-                        Color.teslaCardBackground.opacity(0.96),
-                        Color.teslaCardBackground.opacity(0.72),
-                        Color.teslaCardBackground.opacity(0.0)
-                    ],
-                    startPoint: .bottom,
-                    endPoint: .top
-                )
-            )
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+
+            ZStack(alignment: .bottomLeading) {
+                if let coordinate {
+                    VehicleLocationPreviewMap(coordinate: coordinate)
+                } else {
+                    ZStack {
+                        Color.teslaControlBackground
+                        Image(systemName: "map")
+                            .font(.title2.weight(.semibold))
+                            .foregroundStyle(Color.teslaSecondaryText)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(locationTitle)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.teslaPrimaryText)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.78)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 28)
+                .padding(.bottom, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background {
+                    LinearGradient(
+                        colors: [
+                            Color.teslaCardBackground.opacity(0.98),
+                            Color.teslaCardBackground.opacity(0.82),
+                            Color.teslaCardBackground.opacity(0)
+                        ],
+                        startPoint: .bottom,
+                        endPoint: .top
+                    )
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .frame(maxHeight: .infinity)
+            .clipShape(UnevenRoundedRectangle(
+                topLeadingRadius: 18,
+                bottomLeadingRadius: 24,
+                bottomTrailingRadius: 24,
+                topTrailingRadius: 18,
+                style: .continuous
+            ))
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.teslaCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .stroke(Color.teslaHairline, lineWidth: 1)
         }
-        .shadow(color: Color.black.opacity(0.02), radius: 10, x: 0, y: 4)
-        .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 8)
+        .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     private var normalizedLocationText: String? {
@@ -1577,7 +1742,7 @@ private struct VehicleRideSummaryGroupCard: View {
     var snapshot: NinebotVehicleSnapshot
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
                 Label("行程", systemImage: "road.lanes")
                     .font(.subheadline.weight(.semibold))
@@ -1590,32 +1755,36 @@ private struct VehicleRideSummaryGroupCard: View {
                     .font(.caption.weight(.bold))
                     .foregroundStyle(Color.teslaSecondaryText)
             }
+            .padding(.horizontal, 2)
 
-            VehicleRideSummaryTile(
-                title: "最近骑行",
-                value: formatDistanceNumber(snapshot.state.lastMileage),
-                unit: "km",
-                systemImage: "arrow.left.arrow.right",
-                isPrimary: true
-            )
+            VStack(spacing: 8) {
+                VehicleRideSummaryTile(
+                    title: "最近骑行",
+                    value: formatDistanceNumber(snapshot.state.lastMileage),
+                    unit: "km",
+                    systemImage: "arrow.left.arrow.right",
+                    isPrimary: true
+                )
 
-            VehicleRideSummaryTile(
-                title: "总行程",
-                value: formatDistanceNumber(snapshot.state.totalMileage),
-                unit: "km",
-                systemImage: "calendar",
-                isPrimary: false
-            )
+                VehicleRideSummaryTile(
+                    title: "总行程",
+                    value: formatDistanceNumber(snapshot.state.totalMileage),
+                    unit: "km",
+                    systemImage: "calendar",
+                    isPrimary: false
+                )
+            }
+            .frame(maxHeight: .infinity)
         }
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .stroke(Color.teslaHairline, lineWidth: 1)
         }
-        .shadow(color: Color.black.opacity(0.02), radius: 10, x: 0, y: 4)
+        .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 8)
     }
 }
 
@@ -1627,31 +1796,31 @@ private struct VehicleRideSummaryTile: View {
     var isPrimary: Bool
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
+        HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 Label(title, systemImage: systemImage)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(Color.teslaSecondaryText)
                     .lineLimit(1)
-
-                HStack(alignment: .lastTextBaseline, spacing: 3) {
-                    Text(value)
-                        .font(.system(size: isPrimary ? 28 : 21, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(Color.teslaPrimaryText)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.55)
-                    Text(unit)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(Color.teslaPrimaryText)
-                        .lineLimit(1)
-                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(alignment: .lastTextBaseline, spacing: 3) {
+                Text(value)
+                    .font(.system(size: isPrimary ? 30 : 25, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.teslaPrimaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.52)
+                Text(unit)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.teslaPrimaryText)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: 112, alignment: .trailing)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, isPrimary ? 9 : 8)
-        .frame(maxWidth: .infinity, minHeight: isPrimary ? 67 : 50, alignment: .leading)
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background(isPrimary ? Color.teslaGreen.opacity(0.10) : Color.teslaControlBackground)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
@@ -1806,7 +1975,7 @@ private struct VehicleHealthPanel: View {
         let health = snapshot.state.health
 
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
                 ZStack {
                     Circle()
                         .fill(healthColor(health.level).opacity(0.14))
@@ -1835,6 +2004,7 @@ private struct VehicleHealthPanel: View {
                         .font(.caption.weight(.bold))
                         .foregroundStyle(Color.teslaSecondaryText)
                 }
+                .frame(alignment: .center)
             }
 
             if !warnings.isEmpty {
@@ -1850,12 +2020,12 @@ private struct VehicleHealthPanel: View {
         }
         .padding(18)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .stroke(Color.teslaHairline, lineWidth: 1)
         }
-        .shadow(color: Color.black.opacity(0.02), radius: 10, x: 0, y: 4)
+        .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 8)
     }
 }
 
@@ -1899,8 +2069,8 @@ private struct VehicleUsagePanel: View {
         }
         .padding(16)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 8)
     }
 }
 
@@ -1965,8 +2135,8 @@ private struct TripHeroPanel: View {
         }
         .padding(16)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 8)
     }
 }
 
@@ -2009,12 +2179,12 @@ private struct TripTrendEntryCard: View {
         }
         .padding(16)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .stroke(Color.teslaHairline, lineWidth: 1)
         }
-        .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
+        .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 8)
     }
 }
 
@@ -2086,8 +2256,8 @@ private struct TripTrendRangeModelCard: View {
         }
         .padding(16)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 8)
     }
 }
 
@@ -2142,8 +2312,8 @@ private struct TripTrendHeroCard: View {
         }
         .padding(16)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 8)
     }
 }
 
@@ -2177,7 +2347,7 @@ private struct TrendHeroMetric: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.teslaControlBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
 
@@ -2225,8 +2395,8 @@ private struct TripTrendDailyCard: View {
         }
         .padding(16)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 8)
     }
 
     private var visibleRecords: [NinebotDailyMileageRecord] {
@@ -2280,8 +2450,8 @@ private struct TripTrendRideCard: View {
         }
         .padding(16)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 8)
     }
 }
 
@@ -2306,8 +2476,8 @@ private struct TripTrendInsightCard: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 8)
     }
 }
 
@@ -2348,8 +2518,8 @@ private struct TripTrendRecordedCard: View {
         }
         .padding(16)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 8)
     }
 }
 
@@ -2417,7 +2587,7 @@ private struct TrendBarChart: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 12)
         .background(Color.teslaControlBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
 
@@ -2446,7 +2616,7 @@ private struct EmptyTrendState: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
             .background(Color.teslaControlBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
 
@@ -2603,7 +2773,7 @@ private struct DailyMileagePanel: View {
         }
         .padding(16)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
     }
 
@@ -2669,7 +2839,7 @@ private struct DailyMileageLineChart: View {
         }
         .padding(12)
         .background(Color.teslaControlBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .accessibilityLabel("每日里程折线图")
     }
 
@@ -2727,7 +2897,7 @@ private struct VehicleHistoryPanel: View {
         }
         .padding(16)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
     }
 }
@@ -2774,7 +2944,7 @@ private struct VehicleHeroCard: View {
         }
         .padding(16)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
     }
 }
@@ -2828,12 +2998,12 @@ private struct VehicleActionPanel: View {
         }
         .padding(12)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .stroke(Color.teslaHairline, lineWidth: 1)
         }
-        .shadow(color: Color.black.opacity(0.02), radius: 10, x: 0, y: 4)
+        .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 8)
         .padding(.horizontal, 16)
     }
 
@@ -3076,12 +3246,12 @@ private struct VehicleBasicsPanel: View {
         }
         .padding(18)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .stroke(Color.teslaHairline, lineWidth: 1)
         }
-        .shadow(color: Color.black.opacity(0.02), radius: 10, x: 0, y: 4)
+        .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 8)
     }
 }
 
@@ -3190,8 +3360,8 @@ private struct VehicleDetailPanel: View {
             RawFieldSection(title: "行程原始字段", fields: snapshot.state.rawTravel)
         }
         .padding(16)
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Color.teslaCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     private var locationText: String {
@@ -3227,7 +3397,7 @@ private struct DetailSection<Content: View>: View {
                 content
             }
             .background(Color(.tertiarySystemGroupedBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
     }
 }
@@ -3268,6 +3438,8 @@ private struct RideListSection: View {
     var records: [NinebotRideRecord]
     var recordedRides: [NinebotRecordedRide] = []
     var vehicleSN: String?
+    var selectedMonth: String
+    @State private var visibleLimit = 30
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -3289,16 +3461,25 @@ private struct RideListSection: View {
             }
 
             if records.isEmpty {
-                Text("暂无行程列表")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .background(Color(.tertiarySystemGroupedBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("\(tripMonthDisplayName(selectedMonth)) 暂无行程")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.teslaPrimaryText)
+                    Text("可以切换已有月份，或继续向前获取服务器归档。")
+                        .font(.caption)
+                        .foregroundStyle(Color.teslaSecondaryText)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+                .background(Color.teslaCardBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(Color.teslaHairline, lineWidth: 1)
+                }
             } else {
                 VStack(spacing: 10) {
-                    ForEach(Array(records.prefix(30).enumerated()), id: \.element.id) { index, record in
+                    ForEach(Array(records.prefix(visibleLimit).enumerated()), id: \.element.id) { index, record in
                         NavigationLink {
                             NinebotRideDetailView(
                                 model: model,
@@ -3314,8 +3495,35 @@ private struct RideListSection: View {
                         }
                         .buttonStyle(.plain)
                     }
+
+                    if records.count > visibleLimit {
+                        Button {
+                            visibleLimit += 30
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "chevron.down.circle.fill")
+                                Text("显示更多")
+                                Text("\(records.count - visibleLimit)")
+                                    .monospacedDigit()
+                            }
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.teslaGreen)
+                        .background(Color.teslaCardBackground)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(Color.teslaHairline, lineWidth: 1)
+                        }
+                    }
                 }
             }
+        }
+        .onChange(of: selectedMonth) { _ in
+            visibleLimit = 30
         }
     }
 
@@ -3334,7 +3542,7 @@ private struct RideRecordRow: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .fill(Color.teslaGreen.opacity(0.14))
                     Image(systemName: "road.lanes")
                         .font(.headline.weight(.semibold))
@@ -3380,10 +3588,10 @@ private struct RideRecordRow: View {
         .padding(14)
         .background(Color.teslaCardBackground)
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.teslaHairline, lineWidth: 1)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: Color.black.opacity(0.04), radius: 12, x: 0, y: 6)
     }
 
@@ -3523,7 +3731,7 @@ private struct RideDetailHero: View {
         }
         .padding(16)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
     }
 
@@ -3599,7 +3807,7 @@ private struct RideTrackMapPanel: View {
                 }
             }
             .frame(height: 240)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
             TrackSpeedLegend()
 
@@ -3618,7 +3826,7 @@ private struct RideTrackMapPanel: View {
         }
         .padding(16)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
     }
 
@@ -3674,13 +3882,13 @@ private struct InterfaceRideTrackMapPanel: View {
                 }
             }
             .frame(height: 240)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
             TrackSpeedLegend()
         }
         .padding(16)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: Color.black.opacity(0.04), radius: 14, x: 0, y: 8)
     }
 
@@ -3882,7 +4090,7 @@ private struct RideMetric: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
         .background(Color.teslaControlBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -3905,7 +4113,7 @@ private struct RawFieldSection: View {
                     }
                 }
                 .background(Color(.tertiarySystemGroupedBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             } else {
                 Text("暂无数据")
                     .font(.subheadline)
@@ -3971,7 +4179,7 @@ private struct RawJSONSection: View {
                         }
                     }
                     .background(Color(.tertiarySystemGroupedBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 } else {
                     Text(value.displayText)
                         .font(.footnote.monospaced())
@@ -3979,7 +4187,7 @@ private struct RawJSONSection: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(12)
                         .background(Color(.tertiarySystemGroupedBackground))
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                         .textSelection(.enabled)
                 }
             } else {
@@ -4095,8 +4303,8 @@ private struct RawPayloadCopyPanel: View {
             .buttonStyle(.borderedProminent)
         }
         .padding(16)
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Color.teslaCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     private var fullPayloadText: String {
@@ -4151,6 +4359,39 @@ extension Color {
     }
 }
 
+struct NinePlusCardStyle: ViewModifier {
+    var cornerRadius: CGFloat = 24
+    var padding: CGFloat? = nil
+    var shadowOpacity: Double = 0.05
+
+    func body(content: Content) -> some View {
+        let card = content
+            .background(Color.teslaCardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(Color.teslaHairline, lineWidth: 1)
+            }
+            .shadow(color: Color.black.opacity(shadowOpacity), radius: 14, x: 0, y: 8)
+
+        if let padding {
+            card.padding(padding)
+        } else {
+            card
+        }
+    }
+}
+
+extension View {
+    func ninePlusCard(
+        cornerRadius: CGFloat = 24,
+        padding: CGFloat? = nil,
+        shadowOpacity: Double = 0.05
+    ) -> some View {
+        modifier(NinePlusCardStyle(cornerRadius: cornerRadius, padding: padding, shadowOpacity: shadowOpacity))
+    }
+}
+
 private struct VehicleRow: View {
     var snapshot: NinebotVehicleSnapshot
     var isSelected: Bool
@@ -4187,8 +4428,8 @@ private struct VehicleRow: View {
                     .foregroundStyle(isSelected ? Color.teslaGreen : Color(.tertiaryLabel))
             }
             .padding(12)
-            .background(Color(.secondarySystemGroupedBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(Color.teslaCardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
         .buttonStyle(.plain)
     }
@@ -4508,8 +4749,8 @@ private struct EmptyDashboardView: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 54)
         .padding(.horizontal, 20)
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Color.teslaCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
 
@@ -4521,7 +4762,7 @@ private struct VehicleImage: View {
     var body: some View {
         ZStack {
             if showsBackground {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .fill(Color(.tertiarySystemGroupedBackground))
             }
 

@@ -22,13 +22,17 @@ struct NinebotRecordingView: View {
             ScrollView {
                 VStack(spacing: 18) {
                     RecordingHeader(snapshot: snapshot, recorder: recorder)
+                        .padding(16)
+                        .ninePlusCard(cornerRadius: 28)
 
                     RecordingSpeedGauge(
                         speedKmh: recorder.currentSpeedKmh,
                         maxSpeedKmh: recorder.maxSpeedKmh,
                         isRecording: recorder.isRecording
                     )
-                    .padding(.top, 6)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 14)
+                    .ninePlusCard(cornerRadius: 30)
 
                     RecordingControlPanel(
                         recorder: recorder,
@@ -588,7 +592,7 @@ private struct RecordingControlPanel: View {
             .frame(height: 58)
             .foregroundStyle(recorder.isRecording ? .white : .black)
             .background(recorder.isRecording ? Color.red : Color.teslaGreen)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             .shadow(color: (recorder.isRecording ? Color.red : Color.teslaGreen).opacity(0.28), radius: 18, x: 0, y: 8)
         }
         .buttonStyle(.plain)
@@ -644,12 +648,7 @@ private struct RecordingMetricTile: View {
                 .foregroundStyle(Color.teslaSecondaryText)
         }
         .padding(14)
-        .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.teslaHairline, lineWidth: 1)
-        }
+        .ninePlusCard(cornerRadius: 22)
     }
 }
 
@@ -714,19 +713,14 @@ private struct RecordingTrackPreview: View {
                     .foregroundStyle(Color.teslaSecondaryText)
                     .padding(18)
                     .background(Color.teslaCardBackground.opacity(0.88))
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
             }
             .frame(height: 220)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         }
         .padding(14)
-        .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.teslaHairline, lineWidth: 1)
-        }
+        .ninePlusCard(cornerRadius: 24)
     }
 
     private var coordinates: [CLLocationCoordinate2D] {
@@ -782,13 +776,8 @@ private struct RecordingHistorySection: View {
                     .font(.subheadline)
                     .foregroundStyle(Color.teslaSecondaryText)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(14)
-                    .background(Color.teslaCardBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(Color.teslaHairline, lineWidth: 1)
-                    }
+                    .padding(16)
+                    .ninePlusCard(cornerRadius: 22)
             } else {
                 VStack(spacing: 8) {
                     ForEach(records.prefix(5)) { record in
@@ -798,7 +787,6 @@ private struct RecordingHistorySection: View {
                             RecordedRideRowContent(record: record)
                         }
                         .buttonStyle(.plain)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
                 }
             }
@@ -841,11 +829,7 @@ private struct RecordedRideRowContent: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: 72)
-        .background(Color.teslaCardBackground)
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.teslaHairline, lineWidth: 1)
-        }
+        .ninePlusCard(cornerRadius: 22)
     }
 }
 
@@ -877,9 +861,9 @@ private struct RecordedRideDetailView: View {
                     .padding(14)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.teslaCardBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
                             .stroke(Color.teslaHairline, lineWidth: 1)
                     }
                 }
@@ -893,7 +877,7 @@ private struct RecordedRideDetailView: View {
                         .frame(maxWidth: .infinity)
                         .frame(height: 54)
                         .background(Color.red)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 }
                 .buttonStyle(.plain)
             }
@@ -967,9 +951,9 @@ private struct RecordedRideDetailHero: View {
         }
         .padding(16)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.teslaHairline, lineWidth: 1)
         }
     }
@@ -1042,11 +1026,11 @@ private struct RecordedRideTrackMap: View {
                     .foregroundStyle(Color.teslaSecondaryText)
                     .padding(18)
                     .background(Color.teslaCardBackground.opacity(0.88))
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 }
             }
             .frame(height: 300)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
             if record.recordingCoordinates.count > 1 {
                 HStack(spacing: 10) {
@@ -1064,9 +1048,9 @@ private struct RecordedRideTrackMap: View {
         }
         .padding(14)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.teslaHairline, lineWidth: 1)
         }
     }
@@ -1174,9 +1158,9 @@ private struct RecordedRideExportCard: View {
         }
         .padding(14)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.teslaHairline, lineWidth: 1)
         }
     }
@@ -1231,9 +1215,9 @@ private struct RecordingDetailMetric: View {
         .padding(14)
         .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
         .background(Color.teslaCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.teslaHairline, lineWidth: 1)
         }
     }

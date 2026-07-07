@@ -9,6 +9,7 @@ enum NinebotInputError: LocalizedError {
     case missingAccount
     case missingPassword
     case missingCode
+    case platformOnly
 
     var errorDescription: String? {
         switch self {
@@ -20,6 +21,8 @@ enum NinebotInputError: LocalizedError {
             return "请填写密码"
         case .missingCode:
             return "请填写验证码"
+        case .platformOnly:
+            return "请切换到服务器模式后再拉取历史行程"
         }
     }
 }
@@ -149,6 +152,7 @@ final class NinebotViewModel: ObservableObject {
     @Published private(set) var recordedRides: [NinebotRecordedRide] = []
     @Published private(set) var rideDetails: [String: NinebotRideDetail] = [:]
     @Published private(set) var loadingRideDetailKeys: Set<String> = []
+    @Published private(set) var syncingTravelMonth: String?
 
     private let store = NinebotSharedStore()
     private var lastAutomaticRefreshAt: Date?
@@ -195,7 +199,11 @@ final class NinebotViewModel: ObservableObject {
     }
 
     var hasLoginAccount: Bool {
-        !(loginResult?.phone?.trimmed ?? "").isEmpty
+        let hasPhone = !(loginResult?.phone?.trimmed ?? "").isEmpty
+        if dataSourceMode == .platform {
+            return hasPhone && !(loginResult?.sessionToken?.trimmed ?? "").isEmpty
+        }
+        return hasPhone
     }
 
     var loginAccountCount: Int {
@@ -281,6 +289,33 @@ final class NinebotViewModel: ObservableObject {
         }
     }
 
+    func syncTravelMonth(vehicleSN: String, month: String) async {
+        await runLoadingOperation(message: "正在获取 \(Self.displayMonth(month)) 行程") {
+            guard self.dataSourceMode == .platform else {
+                throw NinebotInputError.platformOnly
+            }
+            self.syncingTravelMonth = month
+            defer { self.syncingTravelMonth = nil }
+
+            let client = try makeClient()
+            let page = try await client.syncTravelMonth(sn: vehicleSN, month: month, pageSize: 100)
+            self.store.upsertInterfaceRideRecords(page.records, sn: vehicleSN)
+
+            let dashboard = try await client.fetchDashboard(selectedSN: vehicleSN)
+            let archivedDashboard = self.saveDashboard(dashboard)
+            await self.cacheVehicleImages(for: archivedDashboard)
+            await self.refreshResolvedAddressesIfNeeded(for: archivedDashboard)
+
+            if page.total == 0 {
+                self.statusMessage = "\(Self.displayMonth(month)) 暂无行程"
+            } else {
+                self.statusMessage = "已获取 \(Self.displayMonth(month)) \(page.total) 条行程"
+            }
+            self.errorMessage = nil
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+    }
+
     func resolveAddressesNow() async {
         await runLoadingOperation(message: "正在解析车辆位置") {
             try await self.resolveAddresses(for: self.dashboard, force: true)
@@ -339,9 +374,10 @@ final class NinebotViewModel: ObservableObject {
 
             saveConfiguration()
             let client = try makeClient()
-            let result = try await client.login(account: account.trimmed, password: password)
+            let result = try await loginWithPassword(client: client, account: account.trimmed, password: password)
             rememberLoginResult(result, fallbackAccount: account.trimmed)
             password = ""
+            await self.syncPushDeviceTokenIfPossible()
 
             let dashboard = try await makeClient().fetchDashboard(selectedSN: self.dashboard.selectedSN)
             let archivedDashboard = self.saveDashboard(dashboard)
@@ -359,7 +395,11 @@ final class NinebotViewModel: ObservableObject {
 
             saveConfiguration()
             let client = try makeClient()
-            try await client.sendLoginCode(account: account.trimmed)
+            if dataSourceMode == .platform {
+                try await client.sendPlatformLoginCode(account: account.trimmed)
+            } else {
+                try await client.sendLoginCode(account: account.trimmed)
+            }
             self.errorMessage = nil
             self.statusMessage = "验证码已发送"
         }
@@ -372,9 +412,10 @@ final class NinebotViewModel: ObservableObject {
 
             saveConfiguration()
             let client = try makeClient()
-            let result = try await client.consumeLoginCode(account: account.trimmed, code: smsCode.trimmed)
+            let result = try await consumeLoginCode(client: client, account: account.trimmed, code: smsCode.trimmed)
             rememberLoginResult(result, fallbackAccount: account.trimmed)
             smsCode = ""
+            await self.syncPushDeviceTokenIfPossible()
 
             let dashboard = try await makeClient().fetchDashboard(selectedSN: self.dashboard.selectedSN)
             let archivedDashboard = self.saveDashboard(dashboard)
@@ -521,7 +562,8 @@ final class NinebotViewModel: ObservableObject {
     private var currentConfiguration: NinebotProxyConfiguration {
         NinebotProxyConfiguration(
             baseURLString: baseURLString,
-            bearerToken: bearerToken
+            bearerToken: bearerToken,
+            appSessionToken: dataSourceMode == .platform ? loginResult?.sessionToken : nil
         )
     }
 
@@ -541,6 +583,20 @@ final class NinebotViewModel: ObservableObject {
 
     private func rideDetailKey(vehicleSN: String, rideID: String) -> String {
         "\(vehicleSN)|\(rideID)"
+    }
+
+    private func loginWithPassword(client: NinebotProxyClient, account: String, password: String) async throws -> NinebotLoginResult {
+        if dataSourceMode == .platform {
+            return try await client.platformLogin(account: account, password: password)
+        }
+        return try await client.login(account: account, password: password)
+    }
+
+    private func consumeLoginCode(client: NinebotProxyClient, account: String, code: String) async throws -> NinebotLoginResult {
+        if dataSourceMode == .platform {
+            return try await client.consumePlatformLoginCode(account: account, code: code)
+        }
+        return try await client.consumeLoginCode(account: account, code: code)
     }
 
     @discardableResult
@@ -649,6 +705,9 @@ final class NinebotViewModel: ObservableObject {
         loginResult = resolvedResult
         account = resolvedResult.phone ?? fallbackAccount
         store.saveLoginResult(resolvedResult)
+        if dataSourceMode == .platform {
+            store.saveConfiguration(currentConfiguration)
+        }
     }
 
     private func runLoadingOperation(message: String, _ operation: () async throws -> Void) async {
@@ -683,6 +742,13 @@ final class NinebotViewModel: ObservableObject {
 
         isLoading = false
         loadingMessage = nil
+    }
+
+    private static func displayMonth(_ month: String) -> String {
+        guard month.count == 6 else { return month }
+        let year = month.prefix(4)
+        let monthValue = month.suffix(2)
+        return "\(year)年\(monthValue)月"
     }
 
     private static let timeFormatter: DateFormatter = {

@@ -43,6 +43,18 @@ struct NinebotProxyClient {
         return Self.loginResult(from: payload)
     }
 
+    func platformLogin(account: String, password: String) async throws -> NinebotLoginResult {
+        let payload = try await request(
+            method: "POST",
+            path: ["accounts", "login"],
+            body: [
+                "account": account,
+                "password": password,
+            ]
+        )
+        return Self.loginResult(from: payload)
+    }
+
     func sendLoginCode(account: String) async throws {
         _ = try await request(
             method: "POST",
@@ -51,10 +63,30 @@ struct NinebotProxyClient {
         )
     }
 
+    func sendPlatformLoginCode(account: String) async throws {
+        _ = try await request(
+            method: "POST",
+            path: ["accounts", "login-code"],
+            body: ["account": account]
+        )
+    }
+
     func consumeLoginCode(account: String, code: String) async throws -> NinebotLoginResult {
         let payload = try await request(
             method: "POST",
             path: ["auth", "login-code", "consume"],
+            body: [
+                "account": account,
+                "code": code,
+            ]
+        )
+        return Self.loginResult(from: payload)
+    }
+
+    func consumePlatformLoginCode(account: String, code: String) async throws -> NinebotLoginResult {
+        let payload = try await request(
+            method: "POST",
+            path: ["accounts", "login-code", "consume"],
             body: [
                 "account": account,
                 "code": code,
@@ -137,6 +169,18 @@ struct NinebotProxyClient {
         )
     }
 
+    func syncTravelMonth(sn: String, month: String, pageSize: Int = 20) async throws -> NinebotTravelPage {
+        let payload = try await request(
+            method: "POST",
+            path: ["vehicles", sn, "travel-sync"],
+            queryItems: [
+                URLQueryItem(name: "month", value: month),
+                URLQueryItem(name: "page_size", value: "\(pageSize)")
+            ]
+        )
+        return Self.travelPage(from: payload, fallbackMonth: month)
+    }
+
     private func fetchTravel(sn: String, month: String) async throws -> JSONValue {
         try await request(
             method: "GET",
@@ -199,6 +243,10 @@ struct NinebotProxyClient {
         let token = configuration.bearerToken.trimmingCharacters(in: .whitespacesAndNewlines)
         if !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        if let sessionToken = configuration.appSessionToken?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !sessionToken.isEmpty {
+            request.setValue(sessionToken, forHTTPHeaderField: "X-NinePlus-Session")
         }
 
         if let body {
@@ -281,7 +329,9 @@ private extension NinebotProxyClient {
             phone: object["phone"]?.stringValue,
             areaCode: object["area_code"]?.stringValue,
             region: object["region"]?.stringValue,
-            businessUID: object["business_uid"]?.stringValue
+            businessUID: object["business_uid"]?.stringValue,
+            accountID: object["account_id"]?.intValue ?? object["id"]?.intValue,
+            sessionToken: object["session_token"]?.stringValue ?? object["sessionToken"]?.stringValue
         )
     }
 
@@ -343,6 +393,23 @@ private extension NinebotProxyClient {
         var resolved = vehicle
         resolved.imageURLString = imageURLString
         return resolved
+    }
+
+    static func travelPage(from value: JSONValue, fallbackMonth: String) -> NinebotTravelPage {
+        let object = value.objectValue ?? [:]
+        let rides = object["list"]?.arrayValue ?? []
+        let records = rides.enumerated().compactMap { index, value in
+            rideRecord(from: value, index: index)
+        }
+        return NinebotTravelPage(
+            month: firstString(["month"], in: object) ?? fallbackMonth,
+            page: object["page"]?.intValue ?? 1,
+            pageSize: object["page_size"]?.intValue ?? object["pageSize"]?.intValue ?? records.count,
+            total: object["total"]?.intValue ?? records.count,
+            hasMore: object["has_more"]?.boolValue ?? object["hasMore"]?.boolValue ?? false,
+            records: records,
+            raw: value
+        )
     }
 
     static func vehicleState(status: JSONValue?, travel: JSONValue?, battery: JSONValue? = nil, updatedAt: Date) -> NinebotVehicleState {

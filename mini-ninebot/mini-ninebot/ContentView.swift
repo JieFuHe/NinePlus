@@ -51,7 +51,8 @@ struct ContentView: View {
 
             NavigationStack {
                 NinebotSettingsView(model: model)
-                    .navigationTitle("我的")
+                    .navigationTitle(model.hasLoginAccount ? "我的" : "")
+                    .toolbar(model.hasLoginAccount ? .visible : .hidden, for: .navigationBar)
             }
             .tabItem {
                 Label("我的", systemImage: "person.crop.circle")

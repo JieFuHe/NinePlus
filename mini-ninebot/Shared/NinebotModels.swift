@@ -34,8 +34,8 @@ enum NinebotDataSourceMode: String, Codable, CaseIterable, Identifiable {
 
     var tokenPlaceholder: String {
         switch self {
-        case .proxy: return "ninecli Bearer Token"
-        case .platform: return "NinePlus App Bearer Token"
+        case .proxy: return "ninecli 设置了 Token 才填写"
+        case .platform: return "后台设置了 App Bearer Token 才填写"
         }
     }
 
@@ -50,6 +50,7 @@ enum NinebotDataSourceMode: String, Codable, CaseIterable, Identifiable {
 struct NinebotProxyConfiguration: Codable, Equatable {
     var baseURLString: String
     var bearerToken: String
+    var appSessionToken: String? = nil
 
     var baseURL: URL? {
         let trimmed = baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -76,6 +77,8 @@ struct NinebotLoginResult: Codable, Equatable {
     var areaCode: String?
     var region: String?
     var businessUID: String?
+    var accountID: Int?
+    var sessionToken: String?
 }
 
 struct NinebotRefreshEvent: Codable, Equatable {
@@ -184,6 +187,16 @@ struct NinebotRideRecord: Codable, Equatable, Identifiable {
     var durationMinutes: Double?
     var speed: Double?
     var raw: [String: JSONValue]?
+}
+
+struct NinebotTravelPage: Equatable {
+    var month: String
+    var page: Int
+    var pageSize: Int
+    var total: Int
+    var hasMore: Bool
+    var records: [NinebotRideRecord]
+    var raw: JSONValue
 }
 
 struct NinebotRideDetail: Codable, Equatable, Identifiable {

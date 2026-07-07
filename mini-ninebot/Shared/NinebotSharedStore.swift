@@ -173,6 +173,15 @@ struct NinebotSharedStore {
         loadInterfaceRideRecords(sn: sn).count
     }
 
+    func upsertInterfaceRideRecords(_ records: [NinebotRideRecord], sn: String) {
+        guard !records.isEmpty else { return }
+        let mergedRecords = mergeInterfaceRideRecords(
+            incoming: records,
+            stored: loadInterfaceRideRecords(sn: sn)
+        )
+        saveInterfaceRideRecords(mergedRecords, sn: sn)
+    }
+
     func recordedRideCount() -> Int {
         loadRecordedRides().count
     }

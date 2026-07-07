@@ -15,6 +15,7 @@ build/
 *.ipa
 node_modules/
 platform/
+ninecli-source/
 
 # Signing material
 *.mobileprovision
